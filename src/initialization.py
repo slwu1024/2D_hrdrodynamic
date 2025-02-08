@@ -1,4 +1,5 @@
 # hydrodynamic_model/model/initialization.py
+import numpy as np
 
 from .mesh import Node, Edge, Cell
 
