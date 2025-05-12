@@ -52,7 +52,19 @@ POLY_FILE = file_paths.get('poly_file') # **从配置获取 poly 文件路径**
 NODE_FINAL_FILE = file_paths.get('node_file') # **从配置获取 node 输出路径**
 CELL_FINAL_FILE = file_paths.get('cell_file') # **从配置获取 cell 输出路径**
 EDGE_FINAL_FILE = file_paths.get('edge_file') # **从配置获取 edge 输出路径**
-OUTPUT_VTK_VIS = file_paths.get('output_directory', 'output_vis') + "/mesh_vis.vtk" # **构建VTK路径**
+# --- 修改 OUTPUT_VTK_VIS 的定义 ---
+# 假设 NODE_FINAL_FILE, CELL_FINAL_FILE, EDGE_FINAL_FILE 都在同一个目录下，例如 "mesh/"
+# 我们可以从 NODE_FINAL_FILE 获取这个目录
+if NODE_FINAL_FILE: # 确保 NODE_FINAL_FILE 已定义
+    mesh_output_directory = os.path.dirname(NODE_FINAL_FILE) # 获取 .node 文件所在的目录
+    # 确保目录存在 (虽然保存 .node 文件时也会创建，但这里再次确保)
+    os.makedirs(mesh_output_directory, exist_ok=True) # 创建目录，如果已存在则不报错
+    OUTPUT_VTK_VIS = os.path.join(mesh_output_directory, "generated_mesh_with_terrain.vtk") # 构建VTK文件路径
+else: # 如果 NODE_FINAL_FILE 未定义，则使用备用路径
+    print("警告: NODE_FINAL_FILE 未在配置中定义，VTK可视化文件将保存到默认的 output_vis 目录。") # 打印警告
+    default_vis_dir = file_paths.get('output_directory', 'output_vis') # 获取默认可视化目录
+    os.makedirs(default_vis_dir, exist_ok=True) # 创建目录
+    OUTPUT_VTK_VIS = os.path.join(default_vis_dir, "generated_mesh_with_terrain.vtk") # 构建备用VTK文件路径
 
 TRIANGLE_OPTS = mesh_gen_config.get('triangle_opts', "pq30a1.0ez") # **从配置获取 Triangle 选项**
 ELEVATION_SOURCE_METHOD = mesh_gen_config.get('elevation_source_method', 'interpolation') # **从配置获取高程方法**
@@ -292,7 +304,7 @@ def visualize_mesh_2d(parsed_poly_data, generated_mesh_points_xy, generated_tria
 if __name__ == "__main__":
     # --- 步骤 1: 解析 .poly 文件 (路径来自配置) ---
     print("--- 步骤 1: 解析 .poly 文件 ---")
-    poly_data = parse_poly_file(POLY_FILE)  # 使用配置中的路径
+    poly_data = parse_poly_file('../' + POLY_FILE)  # 使用配置中的路径
     if poly_data is None: exit()
 
     # --- 步骤 2: 构建 triangle 输入字典 (不变) ---
@@ -373,28 +385,28 @@ if __name__ == "__main__":
         len(generated_nodes_xy), dtype=int)
 
     # --- 步骤 6: 确保输出目录存在 ---
-    print("\n--- 步骤 6: 创建输出目录 (如果不存在) ---")
-    # ... (确保输出目录存在) ...
-    output_dir_base = os.path.dirname(NODE_FINAL_FILE)  # 获取mesh文件目录
-    output_dir_sim = file_paths.get('output_directory', 'output_sim')  # 获取模拟输出目录
-    os.makedirs(output_dir_base, exist_ok=True)
-    os.makedirs(output_dir_sim, exist_ok=True)
-    vtk_vis_dir = os.path.dirname(OUTPUT_VTK_VIS)  # 获取VTK可视化目录
-    os.makedirs(vtk_vis_dir, exist_ok=True)
-    print("输出目录检查/创建完毕。")
+    # print("\n--- 步骤 6: 创建输出目录 (如果不存在) ---")
+    # # ... (确保输出目录存在) ...
+    # output_dir_base = os.path.dirname(NODE_FINAL_FILE)  # 获取mesh文件目录
+    # output_dir_sim = file_paths.get('output_directory', 'output_sim')  # 获取模拟输出目录
+    # os.makedirs(output_dir_base, exist_ok=True)
+    # os.makedirs(output_dir_sim, exist_ok=True)
+    # vtk_vis_dir = os.path.dirname(OUTPUT_VTK_VIS)  # 获取VTK可视化目录
+    # os.makedirs(vtk_vis_dir, exist_ok=True)
+    # print("输出目录检查/创建完毕。")
 
     print("\n--- 步骤 7: 保存最终模型输入文件 ---")
-    save_node_file_with_z(NODE_FINAL_FILE, generated_nodes_xy, mesh_z_bed, final_node_markers)
-    save_cell_file(CELL_FINAL_FILE, generated_triangles)
+    save_node_file_with_z('../' + NODE_FINAL_FILE, generated_nodes_xy, mesh_z_bed, final_node_markers)
+    save_cell_file('../' + CELL_FINAL_FILE, generated_triangles)
     if generated_edges is not None:
-        save_edge_file(EDGE_FINAL_FILE, generated_edges, generated_edge_markers)
+        save_edge_file('../' + EDGE_FINAL_FILE, generated_edges, generated_edge_markers)
 
     print("\n--- 步骤 8: 保存 VTK 可视化文件 ---")
     mesh_points_3d = np.hstack([generated_nodes_xy, mesh_z_bed.reshape(-1, 1)])
-    save_vtk_for_visualization(OUTPUT_VTK_VIS, mesh_points_3d, generated_triangles)  # 保存到模拟输出目录下的 vtk 文件
+    save_vtk_for_visualization('../' + OUTPUT_VTK_VIS, mesh_points_3d, generated_triangles)  # 保存到模拟输出目录下的 vtk 文件
 
     print(f"\n网格数据准备流程完成。")
-    print(f"网格文件输出到: {output_dir_base}")
+    # print(f"网格文件输出到: {output_dir_base}")
     print(f"VTK 可视化文件: {OUTPUT_VTK_VIS}")
     # --- 步骤 9: (可选) 可视化二维网格 ---
     print("\n--- 步骤 9: 可视化二维网格 ---")  # 打印步骤9的标题

@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/ # 通常Python的build目录也应该忽略，但如果你用scikit-build，它可能在src_cpp下创建build
+
+# C++/CMake build files (根据你的CMake输出目录调整)
+src_cpp/build/ # 如果你的CMake构建目录在src_cpp下
+src_cpp/cmake-build-*/ # CLion的默认构建目录模式
+*.so
+*.dll
+*.lib
+*.exe
+*.o
+*.a
+
+# IDE / Editor specific
+.idea/
+.vscode/
+*.swp
+*~
+
+# Output files
+output/
+output_*/
+simulation_output/
+meshio_test_output/
+src/output_lake_at_rest/ # 这个看起来像是错误的输出位置
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# OS generated files
+.DS_Store
+Thumbs.db
