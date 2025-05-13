@@ -246,13 +246,17 @@ PYBIND11_MODULE(hydro_model_cpp, m) { // 定义Python模块，名称为 hydro_mo
             [](const HydroModelCore_cpp &self) { // lambda函数
                 StateVector u_vec = self.get_U_state_all_internal_copy(); // 获取C++数据副本
                 if (u_vec.empty()) { // 处理空情况
-                    // *** 修改这里：显式指定 C_STYLE ***
+                    // *** 显式指定 C_STYLE ***
                     return py::array_t<double, py::array::c_style>({0,3}); // 返回空Nx3 C风格数组
-                }
-                py::array_t<double, py::array::c_style> result_np({(py::ssize_t)u_vec.size(), (py::ssize_t)3}); // 创建NumPy数组
+                } // 结束空处理
+                // *** 显式指定 C_STYLE ***
+                py::array_t<double, py::array::c_style> result_np({(py::ssize_t)u_vec.size(), (py::ssize_t)3}); // 创建 C 风格 NumPy 数组
                 auto buf = result_np.request(); // 获取缓冲区信息
                 double *ptr = static_cast<double *>(buf.ptr); // 获取指针
-                std::memcpy(ptr, u_vec.data(), u_vec.size() * 3 * sizeof(double)); // 内存拷贝
+                // 使用 C++ 向量的 data() 获取连续内存指针，确保数据是连续存储的
+                if (!u_vec.empty()) { // 再次检查非空，避免对空向量调用 data()
+                    std::memcpy(ptr, u_vec.data()->data(), u_vec.size() * 3 * sizeof(double)); // 使用 data()->data() 获取底层指针
+                } // 结束拷贝
                 return result_np; // 返回NumPy数组
             }, "Returns a NumPy array copy of the current U state [h, hu, hv].") // 方法文档字符串
 
@@ -260,14 +264,16 @@ PYBIND11_MODULE(hydro_model_cpp, m) { // 定义Python模块，名称为 hydro_mo
             [](const HydroModelCore_cpp &self) { // lambda函数
                 std::vector<double> eta_vec = self.get_eta_previous_internal_copy(); // 获取C++数据副本
                  if (eta_vec.empty()) { // 处理空情况
-                    // *** 修改这里：显式指定 C_STYLE ***
-                    return py::array_t<double, py::array::c_style>(0); // 返回空一维 C风格数组
-                }
-                py::array_t<double, py::array::c_style> result_np(eta_vec.size()); // 创建NumPy数组
+                    // *** 显式指定 C_STYLE ***
+                    return py::array_t<double, py::array::c_style>(0); // 返回空一维 C 风格数组
+                } // 结束空处理
+                // *** 显式指定 C_STYLE ***
+                py::array_t<double, py::array::c_style> result_np(eta_vec.size()); // 创建 C 风格 NumPy 数组
                 auto buf = result_np.request(); // 获取缓冲区信息
                 double *ptr = static_cast<double *>(buf.ptr); // 获取指针
-                std::memcpy(ptr, eta_vec.data(), eta_vec.size() * sizeof(double)); // 内存拷贝
+                if (!eta_vec.empty()){ // 检查非空
+                     std::memcpy(ptr, eta_vec.data(), eta_vec.size() * sizeof(double)); // 内存拷贝
+                } // 结束拷贝
                 return result_np; // 返回NumPy数组
             }, "Returns a NumPy array copy of the previous water surface elevation (eta) state."); // 方法文档字符串
-
 } // 结束模块定义

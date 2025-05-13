@@ -6,6 +6,7 @@
 #include <cmath>     // 包含数学函数
 #include <vector>    // 包含vector容器
 #include <array>     // 包含array容器
+#include <limits>    // 为了 numeric_limits
 
 namespace HydroCore { // HydroCore命名空间开始
 
@@ -101,52 +102,58 @@ void HydroModelCore_cpp::_initialize_manning_from_mesh_internal() { // 从网格
 void HydroModelCore_cpp::set_initial_conditions_cpp(const StateVector& U_initial) { // 设置初始条件(C++)实现
     if (!model_fully_initialized_flag) { // 如果模型未完全初始化
         throw std::runtime_error("Model core not initialized before setting initial conditions."); // 抛出运行时错误
-    }
+    } // 结束检查
     if (!mesh_internal_ptr) { throw std::runtime_error("Mesh not loaded for initial conditions."); } // 如果网格未加载
     if (U_initial.size() != mesh_internal_ptr->cells.size()) { // 如果初始条件大小与单元数量不符
         throw std::invalid_argument("Initial conditions size mismatch with number of cells."); // 抛出无效参数异常
-    }
-    U_state_all_internal = U_initial; // 设置内部守恒量
+    } // 结束检查
+    U_state_all_internal = U_initial; // 设置内部守恒量 (h, hu, hv)
 
-    if (!vfr_calculator_ptr) { // 确保VFR计算器已创建
+    if (!vfr_calculator_ptr) { // 确保VFR计算器已创建 (虽然下面可能不用它来设置初始eta，但其他地方可能需要)
         throw std::runtime_error("VFRCalculator not initialized, cannot compute initial eta in C++."); // 抛出运行时错误
-    }
+    } // 结束检查
+
     eta_previous_internal.resize(mesh_internal_ptr->cells.size()); // 调整eta数组大小
+
+    // ************* 关键修改 *************
+    // 对于 uniform_elevation 类型的初始条件，我们期望初始的 eta_previous_internal
+    // 直接是给定的水面高程。U_initial 中的 h 已经是根据这个高程和底床计算的。
+    // 我们需要一种方式从Python端知道初始条件类型，或者在这里基于U_initial[0]和z_bed反推。
+    // 一个更稳健的做法是，如果Python端已经明确知道初始水位是 uniform_elevation，
+    // 那么 eta_previous_internal 应该直接等于那个值。
+    // 假设我们能从某个地方获取到初始的 uniform_water_surface_elevation
+    // (这可能需要从Python端传递一个额外的参数给这个函数，或者在HydroModelCore中存储这个值)
+    //
+    // 简化处理：我们假设U_initial[0]是根据某个统一水位计算的。
+    // eta = h + z_bed_centroid。这只是一个近似，但对于初始状态可能足够。
+    // 更准确的是，应该从Python知道初始设置的eta_initial值。
+
+    // **一个更直接的方法，如果Python端已经设置了初始水位是 params['initial_water_surface_elevation']**
+    // **那么 eta_previous_internal 的每个值都应该是这个。**
+    // **但是，set_initial_conditions_cpp 只接收 U_initial。**
+    // **所以，这里我们还是基于 U_initial[0] (水深) 和 z_bed_centroid 来近似初始水位。**
+    // **这解释了为什么VFR被用来“修正”它，但对于uniform_elevation，这个修正是多余的，且可能出错。**
+
     for (size_t i = 0; i < mesh_internal_ptr->cells.size(); ++i) { // 遍历所有单元
         const Cell_cpp& cell = mesh_internal_ptr->cells[i]; // 获取当前单元
-        if (U_state_all_internal[i][0] >= min_depth_internal / 10.0) { // 如果单元为湿
-            std::vector<double> b_sorted_cell_cpp; // 存储单元排序后的顶点底高程
-            std::vector<Node_cpp> nodes_sorted_cell_cpp; // 存储单元排序后的节点对象
-            for(int node_id : cell.node_ids) { // 遍历单元的节点ID
-                const Node_cpp* node = mesh_internal_ptr->get_node_by_id(node_id); // 获取节点对象
-                if(node) nodes_sorted_cell_cpp.push_back(*node); // 如果节点有效则添加到列表
-            }
-            std::sort(nodes_sorted_cell_cpp.begin(), nodes_sorted_cell_cpp.end(), // 按底高程排序节点
-                      [](const Node_cpp& a, const Node_cpp& b) { return a.z_bed < b.z_bed; });
-            for(const auto& sorted_node : nodes_sorted_cell_cpp) { // 遍历排序后的节点
-                b_sorted_cell_cpp.push_back(sorted_node.z_bed); // 添加底高程到列表
-            }
+        // 直接使用 h_cell + z_bed_centroid 作为初始的 eta_previous_internal，
+        // 因为 U_initial[i][0] (水深) 是基于初始的 uniform_elevation 计算的。
+        eta_previous_internal[i] = U_state_all_internal[i][0] + cell.z_bed_centroid; // 水深+单元形心底高程
 
-            if (b_sorted_cell_cpp.size() == 3) { // 如果是三角形单元
-                 double initial_eta_guess = cell.z_bed_centroid + U_state_all_internal[i][0]; // 计算初始eta猜测值
-                 eta_previous_internal[i] = vfr_calculator_ptr->get_eta_from_h( // 调用VFR计算器计算eta
-                    U_state_all_internal[i][0], b_sorted_cell_cpp, nodes_sorted_cell_cpp, cell.area, initial_eta_guess
-                 ); // 结束调用
-            } else { // 其他情况
-                 eta_previous_internal[i] = b_sorted_cell_cpp.empty() ? 0.0 : b_sorted_cell_cpp[0]; // 设置为最低点高程或0
-            }
-        } else { // 如果单元为干
+        // 对于干单元的特殊处理 (如果初始水深为0，则eta等于底高程)
+        if (U_state_all_internal[i][0] < min_depth_internal / 10.0) { // 如果单元初始为干
             double min_b_cell = std::numeric_limits<double>::max(); // 初始化最低点高程为最大值
             bool found_node_cpp = false; // 标记是否找到节点
             for(int node_id : cell.node_ids) { // 遍历单元的节点ID
                 const Node_cpp* node = mesh_internal_ptr->get_node_by_id(node_id); // 获取节点对象
                 if(node) { min_b_cell = std::min(min_b_cell, node->z_bed); found_node_cpp = true; } // 更新最低点高程
-            }
-            eta_previous_internal[i] = found_node_cpp ? min_b_cell : 0.0; // 设置为最低点高程或0
-        }
-    }
+            } // 结束节点遍历
+            eta_previous_internal[i] = found_node_cpp ? min_b_cell : cell.z_bed_centroid; // 设置为节点最低点高程或单元形心底高程
+        } // 结束干单元处理
+    } // 结束单元遍历
+
     initial_conditions_set_flag = true; // 标记初始条件已设置
-    std::cout << "C++ HydroModelCore_cpp: Initial U set, initial eta computed and set." << std::endl; // 打印信息
+    std::cout << "C++ HydroModelCore_cpp: Initial U set. Initial eta_previous_internal directly calculated from U and z_bed_centroid." << std::endl; // 打印信息
 } // 结束函数
 
 void HydroModelCore_cpp::setup_boundary_conditions_cpp( // 设置边界条件(C++)实现
@@ -273,7 +280,19 @@ StateVector HydroModelCore_cpp::_calculate_rhs_explicit_part_internal(const Stat
             }
         }
     }
+    // --- **添加底坡源项** --- // <--- 这是你需要添加的部分
+    for (size_t i = 0; i < mesh_internal_ptr->cells.size(); ++i) { // 再次遍历所有单元
+        const Cell_cpp& cell = mesh_internal_ptr->cells[i]; // 获取当前单元
+        double h_center = U_current_rhs[i][0]; // 获取单元中心水深
 
+        if (h_center >= min_depth_internal / 10.0) { // 只对湿单元计算源项 (用小一点的阈值避免干湿交界问题)
+            // 源项 S_b = [0, -g*h*(∂b/∂x), -g*h*(∂b/∂y)]
+            // 假设 Mesh_cpp::precompute_cell_geometry_cpp() 计算的是 ∂b/∂x 和 ∂b/∂y
+            double gx = gravity_internal; // 使用成员变量 g_internal
+            RHS_vector[i][1] += -gx * h_center * cell.b_slope_x; // x方向动量源项
+            RHS_vector[i][2] += -gx * h_center * cell.b_slope_y; // y方向动量源项
+        } // 结束湿单元判断
+    } // 结束源项添加循环
     return RHS_vector; // 返回RHS向量
 } // 结束函数
 

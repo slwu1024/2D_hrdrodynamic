@@ -67,10 +67,8 @@ get_target_property(EXTENSION_SUFFIX hydro_model_cpp SUFFIX)
 # 设置模块的输出路径，使其直接位于构建目录的根下，或者一个可预测的子目录
 # scikit-build 在 --inplace 时会查找这些位置
 set_target_properties(hydro_model_cpp PROPERTIES
-        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}" # .lib 文件 (虽然我们的是.pyd)
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}" # .dll / .pyd / .so 文件
-        # ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}" # .a / .lib (静态库)
-        # PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}" # .pdb 文件
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/../"  # 输出到项目根目录
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/../"  # 输出到项目根目录
 )
 # 注意：pybind11_add_module 本身可能已经设置了这些。
 # 覆盖它们可能需要小心，或者有时不需要。

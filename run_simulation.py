@@ -3,6 +3,44 @@ import numpy as np
 import os
 import yaml
 import sys # 用于检查Python版本或退出
+print("--- Python Environment Information ---")
+print(f"Python Executable: {sys.executable}")
+print(f"Current Working Directory: {os.getcwd()}")
+print("\n--- sys.path ---")
+for i, p in enumerate(sys.path):
+    print(f"[{i}] {p}")
+print("-" * 30)
+
+print("\n--- Attempting to import hydro_model_cpp ---")
+try:
+    import hydro_model_cpp
+    print("SUCCESS: 'hydro_model_cpp' imported successfully!")
+    print(f"Location of imported hydro_model_cpp: {hydro_model_cpp.__file__}") # 打印模块文件路径
+except ImportError as e:
+    print(f"ERROR: Failed to import 'hydro_model_cpp'.")
+    print(f"ImportError message: {e}")
+
+    # 帮助查找 .pyd 文件
+    print("\n--- Searching for hydro_model_cpp.pyd in common build locations ---")
+    possible_locations = [
+        os.path.join(os.getcwd(), '_skbuild'), # 项目根目录下的 _skbuild
+    ]
+    found_pyd_paths = []
+    for loc_dir_name in possible_locations:
+        if os.path.exists(loc_dir_name):
+            for root, dirs, files in os.walk(loc_dir_name):
+                for file in files:
+                    if file.lower() == "hydro_model_cpp.pyd" or file.lower().startswith("hydro_model_cpp.") and file.lower().endswith((".pyd", ".so")):
+                        found_pyd_paths.append(os.path.join(root, file))
+    if found_pyd_paths:
+        print("Found potential .pyd files at:")
+        for p_path in found_pyd_paths:
+            print(f"  - {p_path}")
+    else:
+        print("Could not automatically find 'hydro_model_cpp.pyd' in common _skbuild locations.")
+print("-" * 30)
+
+
 
 try:
     import hydro_model_cpp # 导入编译好的C++模块
@@ -82,6 +120,12 @@ def get_parameters_from_config(config_data): # 从配置数据获取参数函数
     params['initial_hu'] = float(ic_conf.get('hu', 0.0)) # 获取初始hu，转为浮点数
     params['initial_hv'] = float(ic_conf.get('hv', 0.0)) # 获取初始hv，转为浮点数
 
+    # **新增或确认以下行为溃坝条件读取参数**
+    if params['initial_condition_type'] == 'dam_break_custom':  # 仅当类型为溃坝时才需要这些特定参数
+        params['dam_position_x'] = float(ic_conf.get('dam_position_x', 10.0))  # 从 ic_conf 读取，并提供一个合理的默认值以防万一
+        params['water_depth_left'] = float(ic_conf.get('water_depth_left', 1.0))  # 从 ic_conf 读取
+        params['water_depth_right'] = float(ic_conf.get('water_depth_right', 0.0))  # 从 ic_conf 读取
+
     # 边界条件
     params['boundary_definitions_py'] = config_data.get('boundary_conditions', {}).get('definitions', {}) # 获取Python边界定义
     params['boundary_timeseries_elevation_file'] = fp_conf.get('boundary_timeseries_elevation_file') # 获取水位时间序列文件路径
@@ -112,6 +156,9 @@ def load_manning_values_from_file(manning_filepath, num_cells_expected, default_
 def prepare_initial_conditions(params, num_cells_cpp, mesh_cpp_ptr_for_ic): # 准备初始条件函数
     """根据配置准备初始守恒量 U_initial_np。"""
     h_initial = np.zeros(num_cells_cpp, dtype=float) # 初始化水深数组
+    hu_initial_val = params.get('initial_hu', 0.0) # 获取初始hu值，默认为0.0
+    hv_initial_val = params.get('initial_hv', 0.0) # 获取初始hv值，默认为0.0
+
     if params['initial_condition_type'] == 'uniform_elevation': # 如果是均匀水位
         eta_initial = params['initial_water_surface_elevation'] # 获取初始水位
         for i in range(num_cells_cpp): # 遍历单元
@@ -119,11 +166,22 @@ def prepare_initial_conditions(params, num_cells_cpp, mesh_cpp_ptr_for_ic): # �
             h_initial[i] = max(0.0, eta_initial - cell.z_bed_centroid) # 计算水深
     elif params['initial_condition_type'] == 'uniform_depth': # 如果是均匀水深
         h_initial.fill(params['initial_water_depth']) # 填充水深
+    elif params['initial_condition_type'] == 'dam_break_custom': # **新增溃坝初始条件**
+        dam_pos_x = params.get('dam_position_x', 0.0) # 获取坝的位置 x 坐标，默认为0.0
+        depth_left = params.get('water_depth_left', 1.0) # 获取坝左侧水深，默认为1.0
+        depth_right = params.get('water_depth_right', 0.0) # 获取坝右侧水深，默认为0.0
+        print(f"  Setting dam break initial condition: dam_pos_x={dam_pos_x}, depth_left={depth_left}, depth_right={depth_right}") # 打印溃坝初始条件信息
+        for i in range(num_cells_cpp): # 遍历所有单元
+            cell = mesh_cpp_ptr_for_ic.get_cell(i) # 获取当前单元对象
+            if cell.centroid[0] < dam_pos_x: # 如果单元形心在坝的左侧
+                h_initial[i] = depth_left # 设置为左侧水深
+            else: # 否则 (单元形心在坝的右侧或正好在坝上)
+                h_initial[i] = depth_right # 设置为右侧水深
     else: # 其他类型
         print(f"警告: 未知的初始条件类型 '{params['initial_condition_type']}'。使用默认零水深。") # 打印警告
 
-    hu_initial = np.full(num_cells_cpp, params['initial_hu'], dtype=float) # 初始化hu数组
-    hv_initial = np.full(num_cells_cpp, params['initial_hv'], dtype=float) # 初始化hv数组
+    hu_initial = np.full(num_cells_cpp, hu_initial_val, dtype=float) # 初始化hu数组
+    hv_initial = np.full(num_cells_cpp, hv_initial_val, dtype=float) # 初始化hv数组
     return np.column_stack((h_initial, hu_initial, hv_initial)) # 返回组合后的NumPy数组
 
 def prepare_boundary_conditions_for_cpp(params): # 准备C++边界条件函数
@@ -268,6 +326,11 @@ if __name__ == "__main__": # 主程序入口
     num_cells_cpp_from_core = mesh_cpp_ptr.get_num_cells() # 从C++核心获取单元数
 
     U_initial_np = prepare_initial_conditions(params, num_cells_cpp_from_core, mesh_cpp_ptr) # 准备初始条件
+    print("Debug: U_initial_np (h, hu, hv) head:")  # 打印调试信息
+    print(U_initial_np[:5, :])  # 打印前5行的h, hu, hv
+    # 找到一个在坑底的单元，例如ID为X的单元
+    # cell_example = mesh_cpp_ptr.get_cell(X)
+    # print(f"Debug: Cell {X} z_bed_centroid: {cell_example.z_bed_centroid}, initial_h: {U_initial_np[X,0]}")
     model_core.set_initial_conditions_py(U_initial_np) # 设置初始条件
     print(f"Python: Initial conditions set for {num_cells_cpp_from_core} cells.") # 打印设置完成信息
 
@@ -329,6 +392,12 @@ if __name__ == "__main__": # 主程序入口
             }
             vtk_filepath = os.path.join(vtk_output_dir, f"results_t{output_counter:04d}.vtu") # 构建VTK文件路径
             save_results_to_vtk(vtk_filepath, points_for_vtk, cells_for_vtk, cell_data_for_vtk) # 保存结果到VTK文件
+
+            # 测试代码
+            if output_counter == 0:  # 只在第一个时间步打印
+                eta_from_cpp_t0 = model_core.get_eta_previous_py()  # 获取C++的eta
+                print("Debug: eta_from_cpp_t0 head:")  # 打印调试信息
+                print(eta_from_cpp_t0[:5])  # 打印前5个eta值
 
             output_counter += 1 # 增加输出计数器
             # 只有当模拟还在进行时才更新下一个输出时间

@@ -84,18 +84,22 @@ print(f"高程来源方法: {ELEVATION_SOURCE_METHOD}")
 # --- 地形函数 (仅当 ELEVATION_SOURCE_METHOD = "function" 时使用) ---
 # --- 这个函数需要保持在这里，因为配置指定为 function 时会调用它 ---
 def bed_elevation_func(x, y): # x 和 y 是 NumPy 数组
-    """计算给定 (x, y) 处的底高程，包含一个高斯驼峰 (用于静水测试)。"""
-    x_center = 12.5 # 驼峰中心 x
-    y_center = 2.5  # 驼峰中心 y
-    bump_height = 0.2 # 驼峰高度
-    bump_width_sigma = 2.0 # 驼峰宽度
-
-    dist_sq = (x - x_center)**2 + (y - y_center)**2 # dist_sq 是 NumPy 数组
-
-    # --- 使用 numpy.exp() 而不是 math.exp() ---
-    z_bed = bump_height * np.exp(-dist_sq / (2 * bump_width_sigma**2)) # 对数组进行指数运算
-
-    return z_bed # 返回计算得到的底高程数组
+    """计算给定 (x, y) 处的底高程。对于溃坝算例，我们使用平底。"""
+    # 对于平底，返回一个与 x (或 y) 形状相同的全零数组
+    return np.zeros_like(x) # 返回与 x 相同形状的全零数组，表示底高程为0
+# def bed_elevation_func(x, y): # x 和 y 是 NumPy 数组
+#     """计算给定 (x, y) 处的底高程，包含一个高斯驼峰 (用于静水测试)。"""
+#     x_center = 12.5 # 驼峰中心 x
+#     y_center = 2.5  # 驼峰中心 y
+#     bump_height = 0.2 # 驼峰高度
+#     bump_width_sigma = 2.0 # 驼峰宽度
+#
+#     dist_sq = (x - x_center)**2 + (y - y_center)**2 # dist_sq 是 NumPy 数组
+#
+#     # --- 使用 numpy.exp() 而不是 math.exp() ---
+#     z_bed = bump_height * np.exp(-dist_sq / (2 * bump_width_sigma**2)) # 对数组进行指数运算
+#
+#     return z_bed # 返回计算得到的底高程数组
 
 
 # --- 原 mesh_interpolate.py 的地形读取和插值函数 ---
@@ -364,7 +368,7 @@ if __name__ == "__main__":
             print("错误: 高程来源为 'interpolation' 但未在 yaml 的 file_paths 中配置 topography_file。")
             exit()
         print(f"  使用插值方法: {INTERPOLATION_METHOD}, 地形文件: {TOPOGRAPHY_FILE}")
-        topo_x, topo_y, topo_z = read_topography_csv(TOPOGRAPHY_FILE)
+        topo_x, topo_y, topo_z = read_topography_csv('../' + TOPOGRAPHY_FILE)
         if topo_x is not None and len(topo_x) > 0:
             mesh_z_bed = interpolate_elevation(topo_x, topo_y, topo_z, generated_nodes_xy, INTERPOLATION_METHOD)
             print(f"已为 {len(mesh_z_bed)} 个节点通过插值获取底高程。")
