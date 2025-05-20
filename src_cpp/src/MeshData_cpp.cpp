@@ -10,23 +10,67 @@
 #include <map>           // 用于 setup_half_edge_structure_optimized_cpp
 #include <stdexcept>     // 用于运行时错误
 
+#ifdef _WIN32 // 仅在Windows平台下引入以下头文件和函数
+#define WIN32_LEAN_AND_MEAN // 排除不常用的Windows头文件
+#include <windows.h> // 引入Windows API头文件，用于字符转换
+#endif
+
 namespace HydroCore { // HydroCore命名空间开始
 
+#ifdef _WIN32
+    // 辅助函数：将UTF-8编码的std::string转换为std::wstring (仅Windows)
+    std::wstring utf8_to_wstring_windows(const std::string& utf8_str) { // 定义UTF-8转宽字符函数 (Windows)
+        if (utf8_str.empty()) { // 如果输入字符串为空
+            return std::wstring(); // 返回空宽字符串
+        }
+        // 计算转换后需要的宽字符数量
+        int wide_char_count = MultiByteToWideChar(CP_UTF8, 0, utf8_str.c_str(), -1, NULL, 0); // 调用Windows API计算所需缓冲区大小
+        if (wide_char_count == 0) { // 如果计算失败
+            // std::cerr << "Error in MultiByteToWideChar (calculating size): " << GetLastError() << std::endl; // 打印错误信息 (可选)
+            return std::wstring(); // 返回空宽字符串
+        }
+        std::wstring wide_str(wide_char_count -1, 0); // 创建宽字符串，大小为 count-1 (不包括null终止符)
+        // 执行转换
+        if (MultiByteToWideChar(CP_UTF8, 0, utf8_str.c_str(), -1, &wide_str[0], wide_char_count) == 0) { // 调用Windows API进行转换
+            // std::cerr << "Error in MultiByteToWideChar (converting): " << GetLastError() << std::endl; // 打印错误信息 (可选)
+            return std::wstring(); // 转换失败则返回空宽字符串
+        }
+        return wide_str; // 返回转换后的宽字符串
+    }
+#endif
 // --- 文件读取辅助函数的实现 ---
-bool Mesh_cpp::read_node_file_cpp(const std::string& filepath, std::vector<double>& flat_data, int& num_nodes_out, int& num_attrs_out) { // 读取节点文件(C++) 实现
-    std::ifstream file(filepath); // 打开文件流
+bool Mesh_cpp::read_node_file_cpp(const std::string& filepath_utf8, std::vector<double>& flat_data, int& num_nodes_out, int& num_attrs_out) { // 读取节点文件(C++) 实现
+    std::cout << "C++ received UTF-8 filepath for node file: [" << filepath_utf8 << "]" << std::endl; // 打印接收到的UTF-8路径
+    std::ifstream file; // 声明文件输入流对象
+#ifdef _WIN32 // 如果是Windows平台
+    std::wstring w_filepath = utf8_to_wstring_windows(filepath_utf8); // 将UTF-8路径转换为宽字符路径
+    if (!w_filepath.empty()) { // 如果转换成功且路径非空
+        // std::cout << "C++ attempting to open node file with wstring (Windows): [" << // 调试信息
+        //     std::string(w_filepath.begin(), w_filepath.end()) << "]" << std::endl; // 打印宽字符串（可能乱码）
+        file.open(w_filepath.c_str()); // 使用宽字符路径打开文件
+    } else if (!filepath_utf8.empty()) { // 如果转换失败但原始UTF-8路径非空
+        std::cerr << "Warning: Failed to convert node filepath to wstring, trying with original UTF-8 string." << std::endl; // 打印警告
+        file.open(filepath_utf8.c_str()); // 尝试用原始UTF-8路径打开
+    } else { // 如果原始UTF-8路径也为空
+         file.open(filepath_utf8.c_str()); // 尝试用原始UTF-8路径打开（会失败，但保持逻辑一致）
+    }
+#else
+    // 对于非Windows平台，直接使用UTF-8路径
+    file.open(filepath_utf8.c_str()); // 直接打开
+#endif
+
     if (!file.is_open()) { // 如果文件打开失败
-        std::cerr << "Error: Could not open node file " << filepath << std::endl; // 打印错误信息
+        std::cerr << "Error: Could not open node file " << filepath_utf8 << std::endl; // 打印错误信息
         return false; // 返回失败
     }
 
     std::string line; // 用于存储读取的每一行
     // 读取头部
-    if (!std::getline(file, line)) { std::cerr << "Error: Node file " << filepath << " is empty or unreadable header." << std::endl; return false; } // 读取头部失败
+    if (!std::getline(file, line)) { std::cerr << "Error: Node file " << filepath_utf8 << " is empty or unreadable header." << std::endl; file.close(); return false; } // 读取头部失败，关闭文件并返回
     std::istringstream header_ss(line); // 创建字符串流处理头部
     int dim, point_attrs_count_file, has_marker_file; // 声明头部信息变量
     header_ss >> num_nodes_out >> dim >> point_attrs_count_file >> has_marker_file; // 从字符串流中提取头部信息
-    if (header_ss.fail()) { std::cerr << "Error: Invalid node file header format in " << filepath << std::endl; return false; } // 提取失败
+    if (header_ss.fail()) { std::cerr << "Error: Invalid node file header format in " << filepath_utf8 << std::endl; file.close(); return false; } // 提取失败，关闭文件并返回
 
     num_attrs_out = 4 + (has_marker_file == 1 ? 1 : 0); // 计算实际属性数量 (id, x, y, z_bed [+ marker])
 
@@ -35,8 +79,8 @@ bool Mesh_cpp::read_node_file_cpp(const std::string& filepath, std::vector<doubl
 
     for (int i = 0; i < num_nodes_out; ++i) { // 遍历所有节点
         if (!std::getline(file, line)) { // 读取节点数据行
-            std::cerr << "Error: Unexpected end of file or read error in node file " << filepath << " at node " << i << std::endl; // 读取失败
-            return false; // 返回失败
+            std::cerr << "Error: Unexpected end of file or read error in node file " << filepath_utf8 << " at node " << i << std::endl; // 读取失败
+            file.close(); return false; // 关闭文件并返回失败
         }
         std::istringstream line_ss(line); // 创建字符串流处理当前行
         double node_id, x, y, z_bed; // 声明节点数据变量
@@ -46,7 +90,7 @@ bool Mesh_cpp::read_node_file_cpp(const std::string& filepath, std::vector<doubl
         for(int attr_idx = 0; attr_idx < point_attrs_count_file; ++attr_idx) { // 遍历额外属性
             double dummy_attr; // 声明临时变量存储额外属性
             if (!(line_ss >> dummy_attr)) { // 尝试读取
-                 // std::cerr << "Warning: Could not read all point attributes for node " << node_id << " in " << filepath << std::endl; // 打印警告
+                 // std::cerr << "Warning: Could not read all point attributes for node " << node_id << " in " << filepath_utf8 << std::endl; // 打印警告
                  // break; // 如果属性不足，可能需要调整策略或报错
             }
         }
@@ -54,13 +98,12 @@ bool Mesh_cpp::read_node_file_cpp(const std::string& filepath, std::vector<doubl
 
         if (has_marker_file == 1) { // 如果文件中有标记
             if (!(line_ss >> marker_val)) { // 尝试提取标记值
-                 // std::cerr << "Warning: Could not read marker for node " << node_id << " in " << filepath << std::endl; // 打印警告
+                 // std::cerr << "Warning: Could not read marker for node " << node_id << " in " << filepath_utf8 << std::endl; // 打印警告
             }
         }
         if (line_ss.fail() && !line_ss.eof()) { // 如果提取过程中发生错误（非文件尾导致）
-             std::cerr << "Error: Invalid data format for node " << i << " in " << filepath << ". Line: "<< line << std::endl; // 打印错误信息
-             // 可能需要更详细的错误定位
-             return false; // 返回失败
+             std::cerr << "Error: Invalid data format for node " << i << " in " << filepath_utf8 << ". Line: "<< line << std::endl; // 打印错误信息
+             file.close(); return false; // 关闭文件并返回失败
         }
 
 
@@ -70,36 +113,51 @@ bool Mesh_cpp::read_node_file_cpp(const std::string& filepath, std::vector<doubl
         flat_data.push_back(z_bed);   // 添加z_bed
         if (num_attrs_out == 5) flat_data.push_back(marker_val); // 如果有标记则添加标记
     }
+    file.close(); // 关闭文件
     return true; // 读取成功
 } // 结束函数
 
-bool Mesh_cpp::read_cell_file_cpp(const std::string& filepath, std::vector<int>& flat_data, int& num_cells_out, int& nodes_per_cell_out) { // 读取单元文件(C++) 实现
-    std::ifstream file(filepath); // 打开文件流
+bool Mesh_cpp::read_cell_file_cpp(const std::string& filepath_utf8, std::vector<int>& flat_data, int& num_cells_out, int& nodes_per_cell_out) { // 读取单元文件(C++) 实现
+    std::cout << "C++ received UTF-8 filepath for cell file: [" << filepath_utf8 << "]" << std::endl; // 打印接收到的UTF-8路径
+    std::ifstream file; // 声明文件输入流对象
+#ifdef _WIN32 // 如果是Windows平台
+    std::wstring w_filepath = utf8_to_wstring_windows(filepath_utf8); // 转换路径
+    if (!w_filepath.empty()) { // 如果转换成功
+        file.open(w_filepath.c_str()); // 使用宽字符路径打开
+    } else if (!filepath_utf8.empty()) { // 如果转换失败但原路径非空
+        std::cerr << "Warning: Failed to convert cell filepath to wstring, trying with original UTF-8 string." << std::endl; // 打印警告
+        file.open(filepath_utf8.c_str()); // 尝试用原始UTF-8路径打开
+    } else { // 如果原始UTF-8路径也为空
+        file.open(filepath_utf8.c_str()); // 尝试用原始UTF-8路径打开
+    }
+#else
+    file.open(filepath_utf8.c_str()); // 直接打开
+#endif
     if (!file.is_open()) { // 如果文件打开失败
-        std::cerr << "Error: Could not open cell file " << filepath << std::endl; // 打印错误信息
+        std::cerr << "Error: Could not open cell file " << filepath_utf8 << std::endl; // 打印错误信息
         return false; // 返回失败
     }
+    // ... (文件头部和数据行的读取逻辑保持不变，记得在出错或结束时 file.close())
     std::string line; // 用于存储读取的每一行
-    // 读取头部
-    if (!std::getline(file, line)) { std::cerr << "Error: Cell file " << filepath << " is empty or unreadable header." << std::endl; return false; } // 读取头部失败
+    if (!std::getline(file, line)) { std::cerr << "Error: Cell file " << filepath_utf8 << " is empty or unreadable header." << std::endl; file.close(); return false; } // 读取头部失败
     std::istringstream header_ss(line); // 创建字符串流处理头部
     int ele_attrs_count_file; // 声明文件中的单元属性数量
     header_ss >> num_cells_out >> nodes_per_cell_out >> ele_attrs_count_file; // 从字符串流中提取头部信息
-    if (header_ss.fail()) { std::cerr << "Error: Invalid cell file header format in " << filepath << std::endl; return false; } // 提取失败
+    if (header_ss.fail()) { std::cerr << "Error: Invalid cell file header format in " << filepath_utf8 << std::endl; file.close(); return false; } // 提取失败
 
-    if (nodes_per_cell_out != 3) { // 检查每单元节点数是否为3 (当前仅支持三角形)
-        std::cerr << "Error: Cell file " << filepath << " indicates " << nodes_per_cell_out
+    if (nodes_per_cell_out != 3) { // 检查每单元节点数是否为3
+        std::cerr << "Error: Cell file " << filepath_utf8 << " indicates " << nodes_per_cell_out
                   << " nodes per cell, but C++ MeshData currently only supports 3." << std::endl; // 打印错误信息
-        return false; // 返回失败
+        file.close(); return false; // 返回失败
     }
 
     flat_data.clear(); // 清空扁平化数据容器
-    flat_data.reserve(num_cells_out * (1 + nodes_per_cell_out)); // 预分配内存 (1 for cell_id)
+    flat_data.reserve(num_cells_out * (1 + nodes_per_cell_out)); // 预分配内存
 
     for (int i = 0; i < num_cells_out; ++i) { // 遍历所有单元
         if (!std::getline(file, line)) { // 读取单元数据行
-            std::cerr << "Error: Unexpected end of file or read error in cell file " << filepath << " at cell " << i << std::endl; // 读取失败
-            return false; // 返回失败
+            std::cerr << "Error: Unexpected end of file or read error in cell file " << filepath_utf8 << " at cell " << i << std::endl; // 读取失败
+            file.close(); return false; // 关闭文件并返回失败
         }
         std::istringstream line_ss(line); // 创建字符串流处理当前行
         int ele_id; // 声明单元ID
@@ -110,75 +168,81 @@ bool Mesh_cpp::read_cell_file_cpp(const std::string& filepath, std::vector<int>&
             line_ss >> node_idx; // 提取节点索引
             flat_data.push_back(node_idx); // 添加节点索引
         }
-        // 跳过文件中的额外单元属性
         for(int attr_idx = 0; attr_idx < ele_attrs_count_file; ++attr_idx) { // 遍历额外属性
-            int dummy_attr; // 声明临时变量存储额外属性
+            int dummy_attr; // 声明临时变量
             if (!(line_ss >> dummy_attr)) { // 尝试读取
-                // std::cerr << "Warning: Could not read all element attributes for element " << ele_id << " in " << filepath << std::endl; // 打印警告
-                // break; // 如果属性不足
             }
         }
         if (line_ss.fail() && !line_ss.eof()) { // 如果提取过程中发生错误
-            std::cerr << "Error: Invalid data format for cell " << i << " in " << filepath << ". Line: "<< line << std::endl; // 打印错误信息
-            return false; // 返回失败
+            std::cerr << "Error: Invalid data format for cell " << i << " in " << filepath_utf8 << ". Line: "<< line << std::endl; // 打印错误信息
+            file.close(); return false; // 关闭文件并返回失败
         }
     }
+    file.close(); // 关闭文件
     return true; // 读取成功
 } // 结束函数
 
-bool Mesh_cpp::read_edge_file_cpp(const std::string& filepath, std::vector<int>& flat_data, int& num_edges_out, int& num_edge_attrs_out) { // 读取边文件(C++) 实现
-    if (filepath.empty()) { // 如果文件路径为空
+bool Mesh_cpp::read_edge_file_cpp(const std::string& filepath_utf8, std::vector<int>& flat_data, int& num_edges_out, int& num_edge_attrs_out) { // 读取边文件(C++) 实现
+    if (filepath_utf8.empty()) { // 如果文件路径为空
         num_edges_out = 0; // 边数量为0
         num_edge_attrs_out = 0; // 属性数量为0
         flat_data.clear(); // 清空数据
-        return true; // 认为成功 (没有边文件是允许的)
+        return true; // 认为成功
     }
-    std::ifstream file(filepath); // 打开文件流
+    std::cout << "C++ received UTF-8 filepath for edge file: [" << filepath_utf8 << "]" << std::endl; // 打印接收到的UTF-8路径
+    std::ifstream file; // 声明文件输入流对象
+#ifdef _WIN32 // 如果是Windows平台
+    std::wstring w_filepath = utf8_to_wstring_windows(filepath_utf8); // 转换路径
+    if (!w_filepath.empty()) { // 如果转换成功
+        file.open(w_filepath.c_str()); // 使用宽字符路径打开
+    } else if (!filepath_utf8.empty()){ // 如果转换失败但原路径非空
+        std::cerr << "Warning: Failed to convert edge filepath to wstring, trying with original UTF-8 string." << std::endl; // 打印警告
+        file.open(filepath_utf8.c_str()); // 尝试用原始UTF-8路径打开
+    } else { // 如果原始UTF-8路径也为空
+        file.open(filepath_utf8.c_str()); // 尝试用原始UTF-8路径打开
+    }
+#else
+    file.open(filepath_utf8.c_str()); // 直接打开
+#endif
     if (!file.is_open()) { // 如果文件打开失败
-        std::cerr << "Warning: Could not open edge file " << filepath << ". Proceeding without edge data." << std::endl; // 打印警告
+        std::cerr << "Warning: Could not open edge file " << filepath_utf8 << ". Proceeding without edge data." << std::endl; // 打印警告
         num_edges_out = 0; // 边数量为0
         num_edge_attrs_out = 0; // 属性数量为0
         flat_data.clear(); // 清空数据
         return true; // 仍然返回true，表示可以继续，但没有边数据
     }
+    // ... (文件头部和数据行的读取逻辑保持不变，记得在出错或结束时 file.close())
     std::string line; // 用于存储读取的每一行
-    // 读取头部
-    if (!std::getline(file, line)) { std::cerr << "Error: Edge file " << filepath << " is empty or unreadable header." << std::endl; return false; } // 读取头部失败
+    if (!std::getline(file, line)) { std::cerr << "Error: Edge file " << filepath_utf8 << " is empty or unreadable header." << std::endl; file.close(); return false; } // 读取头部失败
     std::istringstream header_ss(line); // 创建字符串流处理头部
     int has_marker_file; // 声明文件中是否有标记
     header_ss >> num_edges_out >> has_marker_file; // 从字符串流中提取头部信息
-    if (header_ss.fail()) { std::cerr << "Error: Invalid edge file header format in " << filepath << std::endl; return false; } // 提取失败
+    if (header_ss.fail()) { std::cerr << "Error: Invalid edge file header format in " << filepath_utf8 << std::endl; file.close(); return false; } // 提取失败
 
-    num_edge_attrs_out = 3 + (has_marker_file == 1 ? 1 : 0); // 计算实际属性数量 (id, n1, n2 [+ marker])
+        num_edge_attrs_out = 4; // n1, n2, type_marker, original_poly_id
 
-    flat_data.clear(); // 清空扁平化数据容器
-    flat_data.reserve(num_edges_out * num_edge_attrs_out); // 预分配内存
+        flat_data.clear();
+        flat_data.reserve(num_edges_out * num_edge_attrs_out);
 
-    for (int i = 0; i < num_edges_out; ++i) { // 遍历所有边
-        if (!std::getline(file, line)) { // 读取边数据行
-            std::cerr << "Error: Unexpected end of file or read error in edge file " << filepath << " at edge " << i << std::endl; // 读取失败
-            return false; // 返回失败
-        }
-        std::istringstream line_ss(line); // 创建字符串流处理当前行
-        int edge_id, node1_id, node2_id; // 声明边数据变量
-        int marker_val = 0; // 初始化标记值
-        line_ss >> edge_id >> node1_id >> node2_id; // 提取边ID, 节点1ID, 节点2ID
-        if (has_marker_file == 1) { // 如果文件中有标记
-            if(!(line_ss >> marker_val)) { // 尝试提取标记值
-                // std::cerr << "Warning: Could not read marker for edge " << edge_id << " in " << filepath << std::endl; // 打印警告
+        for (int i = 0; i < num_edges_out; ++i) {
+            if (!std::getline(file, line)) { /* ... error ... */ }
+            std::istringstream line_ss(line);
+            int edge_idx_in_file, node1_id, node2_id, type_marker_val, original_poly_seg_id_val;
+
+            // 解析: edge_idx_in_file node1_id node2_id type_marker_val original_poly_seg_id_val
+            if (!(line_ss >> edge_idx_in_file >> node1_id >> node2_id >> type_marker_val >> original_poly_seg_id_val)) { // <--- 修改此行: 读取所有5个值
+                std::cerr << "错误: 边文件 " << filepath_utf8 << " 中第 " << i << " 行数据格式无效。期望5个整数。行: " << line << std::endl; // <--- 修改错误信息
+                file.close(); return false;
             }
-        }
-        if (line_ss.fail() && !line_ss.eof()) { // 如果提取过程中发生错误
-             std::cerr << "Error: Invalid data format for edge " << i << " in " << filepath << ". Line: "<< line << std::endl; // 打印错误信息
-             return false; // 返回失败
-        }
 
-        flat_data.push_back(edge_id);    // 添加边ID
-        flat_data.push_back(node1_id);   // 添加节点1ID
-        flat_data.push_back(node2_id);   // 添加节点2ID
-        if (num_edge_attrs_out == 4) flat_data.push_back(marker_val); // 如果有标记则添加标记
-    }
-    return true; // 读取成功
+            // flat_data 存储 n1, n2, marker, original_id
+            flat_data.push_back(node1_id);
+            flat_data.push_back(node2_id);
+            flat_data.push_back(type_marker_val);
+            flat_data.push_back(original_poly_seg_id_val);
+        }
+        file.close();
+        return true;
 } // 结束函数
 
 void Mesh_cpp::load_mesh_from_files(const std::string& node_filepath, // 从文件加载网格数据实现
@@ -214,13 +278,16 @@ void Mesh_cpp::load_mesh_from_files(const std::string& node_filepath, // 从文�
     std::vector<int> flat_edges_vec; // 存储扁平化边数据的vector
     int num_edges_read = 0, edge_attrs_read = 0; // 初始化读取的边数和属性数
     if (!edge_filepath.empty()) { // 如果边文件路径不为空
+        std::cout << "C++: Attempting to call read_edge_file_cpp for: " << edge_filepath << std::endl;
         if (!read_edge_file_cpp(edge_filepath, flat_edges_vec, num_edges_read, edge_attrs_read)) { // 调用读取边文件函数
-            // read_edge_file_cpp 内部会打印警告如果文件不存在，但这里如果是严重错误则抛出
-            // 如果只是文件不存在，read_edge_file_cpp 会返回true并将 num_edges_read=0
+            std::cout << "C++: read_edge_file_cpp returned false." << std::endl; // <--- 是否有这个输出？
             if(num_edges_read != 0) { // 如果读取失败且num_edges_read不为0，说明是文件格式问题
-                 throw std::runtime_error("Failed to read edge file: " + edge_filepath); // 抛出运行时错误
+                throw std::runtime_error("Failed to read edge file: " + edge_filepath);
             }
+        }else {
+            std::cout << "C++: read_edge_file_cpp returned true. num_edges_read=" << num_edges_read << std::endl;
         }
+
     }
     if (num_edges_read > 0) { // 如果成功读取到边
         std::cout << "  Loaded " << num_edges_read << " edges with " << edge_attrs_read << " attributes each." << std::endl; // 打印加载边信息
@@ -379,53 +446,66 @@ void Mesh_cpp::setup_half_edge_structure_optimized_cpp() { // 优化版半边孪
     //           << boundary_hes_count << " boundary physical edges (resulting in " << boundary_hes_count << " boundary half-edges)." << std::endl; // 打印统计信息
 } // 结束函数
 
-void Mesh_cpp::assign_boundary_markers_to_halfedges_cpp(const std::vector<int>& flat_edge_data, int num_edges_in, int num_edge_attrs) { // 分配边界标记实现
-    if (num_edge_attrs < 3 || num_edges_in == 0) { // 如果属性不足或没有边数据
-        // std::cerr << "Warning: Edge data has too few attributes or no edges, cannot assign markers." << std::endl; // 打印警告
-        // 将所有边界半边的标记设为默认值0
-        for (auto& he : half_edges) { // 遍历所有半边
-            if (he.twin_half_edge_id == -1) { // 如果是边界半边
-                he.boundary_marker = 0; // 设置默认标记
+void Mesh_cpp::assign_boundary_markers_to_halfedges_cpp(const std::vector<int>& flat_edge_data, int num_edges_in, int num_edge_attrs) {
+    // num_edge_attrs 现在应该是 4 (n1, n2, type_marker, original_id)
+    if (num_edges_in == 0 || num_edge_attrs != 4) { // <--- 修改条件: 确保 num_edge_attrs 是 4
+        // 如果没有边数据或属性数不符，则所有边界半边标记默认为0，原始ID默认为-1
+        for (auto& he : half_edges) {
+            if (he.twin_half_edge_id == -1) { // 是边界半边
+                he.boundary_marker = 0; // 按照您的定义，0是内部，但对于未指定的边界，可能需要一个特定的“未指定边界”标记，或者默认为固壁(1)？
+                                        // 这里我们先设为0，意味着它不是一个由.poly定义的外部物理边界。
+                he.original_poly_segment_id = -1;
             }
         }
-        return; // 返回
-    }
-    bool has_marker_in_file = (num_edge_attrs >= 4); // 判断文件中是否有标记
-    // std::cout << "  Assigning boundary markers to half-edges in C++ (file has markers: " << std::boolalpha << has_marker_in_file << ")..." << std::endl; // 打印信息
-
-    std::map<std::pair<int, int>, int> edge_marker_map_from_file; // 用于存储从文件读取的边标记
-    if (has_marker_in_file) { // 如果文件中有标记
-        for (int i = 0; i < num_edges_in; ++i) { // 遍历文件中的所有边
-            int base_idx = i * num_edge_attrs; // 计算基准索引
-            int n1_id = flat_edge_data[base_idx + 1]; // 获取节点1ID
-            int n2_id = flat_edge_data[base_idx + 2]; // 获取节点2ID
-            int marker = static_cast<int>(flat_edge_data[base_idx + 3]); // 获取标记
-            std::pair<int, int> key = (n1_id < n2_id) ? std::make_pair(n1_id, n2_id) : std::make_pair(n2_id, n1_id); // 创建key
-            edge_marker_map_from_file[key] = marker; // 存储标记
+        if (num_edges_in > 0 && num_edge_attrs != 4) {
+             std::cerr << "警告: assign_boundary_markers_to_halfedges_cpp 期望每条边有 " << 4 << " 个属性 (n1,n2,marker,orig_id)，但得到 " << num_edge_attrs << "。边界标记和原始ID可能不正确。" << std::endl;
         }
+        return;
     }
 
-    int assigned_count = 0; // 初始化已分配标记的计数
-    for (auto& he : half_edges) { // 遍历所有半边 (注意是引用)
-        if (he.twin_half_edge_id == -1) { // 如果是边界半边
-             if (he.origin_node_id == -1 || he.next_half_edge_id == -1) continue; // 跳过无效半边
-             const HalfEdge_cpp* next_he = get_half_edge_by_id(he.next_half_edge_id); // 获取下一条半边
-             if (!next_he || next_he->origin_node_id == -1) continue; // 跳过无效的下一条半边
+    // 构建一个从 (排序节点对) 到 (type_marker, original_poly_id) 的映射，以便快速查找
+    std::map<std::pair<int, int>, std::pair<int, int>> edge_info_map_from_file;
+    for (int i = 0; i < num_edges_in; ++i) {
+        int base_idx = i * num_edge_attrs; // num_edge_attrs 现在是 4
+        int n1_id = flat_edge_data[base_idx + 0];
+        int n2_id = flat_edge_data[base_idx + 1];
+        int type_marker = flat_edge_data[base_idx + 2];
+        int original_id = flat_edge_data[base_idx + 3];
+        std::pair<int, int> key = (n1_id < n2_id) ? std::make_pair(n1_id, n2_id) : std::make_pair(n2_id, n1_id);
+        edge_info_map_from_file[key] = std::make_pair(type_marker, original_id);
+    }
 
-            int n1 = he.origin_node_id; // 获取起点ID
-            int n2 = next_he->origin_node_id; // 获取终点ID
-            std::pair<int, int> key_he = (n1 < n2) ? std::make_pair(n1, n2) : std::make_pair(n2, n1); // 创建key
+    int assigned_count = 0;
+    for (auto& he : half_edges) {
+        if (he.twin_half_edge_id == -1) { // 只处理边界半边
+            if (he.origin_node_id == -1 || he.next_half_edge_id == -1) continue;
+            const HalfEdge_cpp* next_he = get_half_edge_by_id(he.next_half_edge_id);
+            if (!next_he || next_he->origin_node_id == -1) continue;
 
-            if (has_marker_in_file && edge_marker_map_from_file.count(key_he)) { // 如果文件中有标记且在map中找到
-                he.boundary_marker = edge_marker_map_from_file[key_he]; // 设置标记
-                assigned_count++; // 增加计数
-            } else { // 否则
-                he.boundary_marker = 0; // 设置默认标记0
+            int n1_he = he.origin_node_id;
+            int n2_he = next_he->origin_node_id;
+            std::pair<int, int> key_he = (n1_he < n2_he) ? std::make_pair(n1_he, n2_he) : std::make_pair(n2_he, n1_he);
+
+            auto it = edge_info_map_from_file.find(key_he);
+            if (it != edge_info_map_from_file.end()) {
+                he.boundary_marker = it->second.first;          // 设置类型标记
+                he.original_poly_segment_id = it->second.second; // 设置原始Segment ID
+                assigned_count++;
+            } else {
+                // 这条边界半边在 .edge 文件中没有对应的条目
+                // 这通常不应该发生，如果.edge文件是基于.poly正确生成的
+                // 除非是网格生成器自己创建的外部边界
+                he.boundary_marker = 1; // 默认为固壁 (或者您的其他默认值)
+                he.original_poly_segment_id = -1; // 无原始ID
+                // std::cerr << "警告: 无法在 .edge 文件数据中找到边界半边 (" << n1_he << "-" << n2_he << ") 的信息。默认为固壁，原始ID -1。" << std::endl;
             }
+        } else { // 内部半边
+            he.boundary_marker = 0; // 确保内部半边的标记是0
+            he.original_poly_segment_id = -1; // 内部半边没有原始.poly segment ID
         }
     }
-    // std::cout << "  Assigned markers to " << assigned_count << " boundary half-edges (others default to 0)." << std::endl; // 打印统计信息
-} // 结束函数
+    // std::cout << "  C++: 已为 " << assigned_count << " 个边界半边分配了标记和原始Segment ID。" << std::endl;
+}
 
 void Mesh_cpp::precompute_cell_geometry_cpp() { // 预计算单元几何属性实现
     // std::cout << "  Precomputing cell geometry in C++..." << std::endl; // 打印开始信息
@@ -493,6 +573,22 @@ void Mesh_cpp::precompute_half_edge_geometry_cpp() { // 预计算半边几何属
             he.normal[0] = dy / he.length;  // 法向量x分量 (指向单元外部)
             he.normal[1] = -dx / he.length; // 法向量y分量
         }
+        // if (n_origin && n_end) { // 确保节点有效
+        //     // 假设你知道右边界上一个典型的半边，其起点和终点ID
+        //     // 例如，如果右边界的节点是1和2 (.poly中的定义)
+        //     // 你需要找到代表这条物理边的半边 (可能有多条，取决于连接的单元)
+        //     // 一个简单的方法是检查这条边的端点坐标是否在 X=10 附近
+        //     if (std::abs(n_origin->x - 10.0) < 1e-3 && std::abs(n_end->x - 10.0) < 1e-3) {
+        //         std::cout << "Debug HalfEdge (Right Wall Candidate): id=" << he.id
+        //                   << ", cell_id=" << he.cell_id
+        //                   << ", origin_node=" << he.origin_node_id << " (" << n_origin->x << "," << n_origin->y << ")"
+        //                   << ", end_node=" << he_next->origin_node_id << " (" << n_end->x << "," << n_end->y << ")" // 注意这里用的是 he_next 的起点作为 he 的终点
+        //                   << ", dx=" << dx << ", dy=" << dy
+        //                   << ", length=" << he.length
+        //                   << ", normal=(" << he.normal[0] << "," << he.normal[1] << ")"
+        //                   << std::endl;
+        //     }
+        // }
     }
 } // 结束函数
 

@@ -29,6 +29,7 @@ struct HalfEdge_cpp { // 半边结构体
     std::array<double, 2> normal = {0.0, 0.0}; // 边的单位外法向量 (nx, ny)
     std::array<double, 2> mid_point = {0.0, 0.0}; // 边的中点坐标 (x_mid, y_mid)
     int boundary_marker = 0;        // 边界标记 (0 通常表示内部边)
+    int original_poly_segment_id = -1; // 新增：存储来自 .poly 文件线段的第一个数字 (原始线段序号) // <--- 新增代码
 
     HalfEdge_cpp(int id_ = -1) : id(id_) {} // 构造函数
 }; // 结束结构体定义

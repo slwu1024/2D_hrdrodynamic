@@ -28,7 +28,12 @@ output/
 output_*/
 simulation_output/
 meshio_test_output/
-src/output_lake_at_rest/ # 这个看起来像是错误的输出位置
+论文/
+tests/
+hydro_model_pkg.egg-info/
+算例/
+_skbuild/
+src_cpp/cmake-build-debug/
 
 # Virtual environments
 venv/

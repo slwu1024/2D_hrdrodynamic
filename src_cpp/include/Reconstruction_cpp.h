@@ -31,6 +31,8 @@ public: // 公有成员
         double gravity,                // 重力加速度
         double min_depth_param         // 最小水深
     ); // 结束构造函数声明
+    // 辅助函数：守恒量转原始量
+    PrimitiveVars_cpp conserved_to_primitive(const std::array<double, 3>& U_cell) const; // 守恒量转原始量
 
     // 在每个时间步开始时计算梯度和限制器 (仅高阶方法需要)
     // U_state_all 是当前所有单元的守恒量 [h, hu, hv]
@@ -59,8 +61,7 @@ public: // 公有成员
     ) const; // const成员函数
 
 private: // 私有成员
-    // 辅助函数：守恒量转原始量
-    PrimitiveVars_cpp conserved_to_primitive(const std::array<double, 3>& U_cell) const; // 守恒量转原始量
+
     // 辅助函数：原始量转守恒量 (如果需要)
     // std::array<double, 3> primitive_to_conserved(const PrimitiveVars_cpp& W_cell) const;
 

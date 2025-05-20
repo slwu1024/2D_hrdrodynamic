@@ -1,177 +1,237 @@
 ﻿// src_cpp/src/FluxCalculator_cpp.cpp
 #include "FluxCalculator_cpp.h" // 包含对应的头文件
 #include <iostream> // 包含输入输出流
+#include <iomanip> // 为了 std::fixed 和 std::setprecision
+
+// 定义一个简单的调试标志，可以在外部控制是否打印
+// 在实际项目中，这可以通过更复杂的日志系统或编译开关来控制
+// static bool enable_debug_print_for_specific_wall = false; // 可以考虑从外部设置
+// 为了方便，我们直接在函数内判断法向量
+
+// --- 新增的调试控制变量 ---
+static bool DEBUG_HLLC_PRINT_ENABLED = false; // 总开关
+static double DEBUG_TARGET_X_MIN = -1e9; // 目标X坐标范围最小值
+static double DEBUG_TARGET_X_MAX = 1e9;  // 目标X坐标范围最大值
+static double DEBUG_TARGET_TIME_MIN = -1e9; // 目标时间范围最小值
+static double DEBUG_TARGET_TIME_MAX = 1e9;   // 目标时间范围最大值
+static int DEBUG_TARGET_HE_ID = -1;      // 目标半边ID (可选)
+// --- 调试控制变量结束 ---
 
 namespace HydroCore { // 定义HydroCore命名空间
+    // 初始化静态成员调试变量
+    bool FluxCalculator_cpp::s_debug_print_enabled = false; // 修改：定义并初始化静态成员变量
+    double FluxCalculator_cpp::s_debug_target_x_min = -1e9; // 修改：定义并初始化静态成员变量
+    double FluxCalculator_cpp::s_debug_target_x_max = 1e9;  // 修改：定义并初始化静态成员变量
+    double FluxCalculator_cpp::s_debug_target_time_min = -1e9; // 修改：定义并初始化静态成员变量
+    double FluxCalculator_cpp::s_debug_target_time_max = 1e9;   // 修改：定义并初始化静态成员变量
+    int FluxCalculator_cpp::s_debug_target_he_id = -1;      // 修改：定义并初始化静态成员变量
 
 FluxCalculator_cpp::FluxCalculator_cpp(double gravity, double min_depth_param, RiemannSolverType_cpp solver_type) // 构造函数实现
     : g(gravity), min_depth(min_depth_param), solver_type_internal(solver_type) { // 初始化列表
     // std::cout << "C++ FluxCalculator_cpp initialized (g=" << g << ", min_depth=" << min_depth << ")" << std::endl; // 打印初始化信息（可选）
 } // 结束构造函数
 
-std::array<double, 3> FluxCalculator_cpp::calculate_hllc_flux( // HLLC通量计算方法实现
-    const PrimitiveVars_cpp& W_L_in, // 左侧原始变量
-    const PrimitiveVars_cpp& W_R_in, // 右侧原始变量
-    const std::array<double, 2>& normal_vec // 法向量
-) { // 开始方法体
-    // --- 步骤 0: 预处理和旋转 ---
-    double nx = normal_vec[0]; // 法向量x分量
-    double ny = normal_vec[1]; // 法向量y分量
+    // 新增一个函数来从外部设置调试参数 (可选，或者直接在需要的地方修改上面的静态变量)
+    // 定义静态成员函数
+void FluxCalculator_cpp::set_debug_conditions(bool enable, double x_min, double x_max, double t_min, double t_max, int he_id) { // 修改：定义为类的静态成员函数
+    s_debug_print_enabled = enable; // 修改：操作静态成员变量
+    s_debug_target_x_min = x_min;   // 修改：操作静态成员变量
+    s_debug_target_x_max = x_max;   // 修改：操作静态成员变量
+    s_debug_target_time_min = t_min; // 修改：操作静态成员变量
+    s_debug_target_time_max = t_max; // 修改：操作静态成员变量
+    s_debug_target_he_id = he_id;     // 修改：操作静态成员变量
+}
+std::array<double, 3> FluxCalculator_cpp::calculate_hllc_flux(
+    const PrimitiveVars_cpp& W_L_param, // 修改：参数名，以区分内部使用的W_L
+    const PrimitiveVars_cpp& W_R_param, // 修改：参数名
+    const std::array<double, 2>& normal_vec
+) {
+    // ... (调试打印的 should_print_debug_local 逻辑不变) ...
+    // if (should_print_debug_local) { ... }
 
-    PrimitiveVars_cpp W_L = W_L_in; // 复制左侧状态（允许修改，例如干单元处理）
-    PrimitiveVars_cpp W_R = W_R_in; // 复制右侧状态
+    PrimitiveVars_cpp W_L = W_L_param; // 拷贝一份输入参数，以便修改
+    PrimitiveVars_cpp W_R = W_R_param; // 拷贝一份输入参数
 
-    bool dryL = (W_L.h < min_depth); // 判断左侧是否为干
-    bool dryR = (W_R.h < min_depth); // 判断右侧是否为干
+    // 新增：对传入HLLC的状态进行最终检查和修正
+    const double hllc_input_dry_threshold = min_depth * 1.5; // HLLC输入干判断阈值，可以比重构的阈值略宽松或一致
 
-    if (dryL && dryR) { // 如果两侧都干
-        return {0.0, 0.0, 0.0}; // 无通量，直接返回
+    if (W_L.h < hllc_input_dry_threshold) { // 如果左侧水深小于HLLC干阈值
+        // W_L.h = std::max(0.0, W_L.h); // 确保非负 (重构应该已经做过，但再次确保)
+        if (W_L.h < min_depth) W_L.h = 0.0; // 如果严格小于min_depth，则视为完全干
+        W_L.u = 0.0; // 清零流速
+        W_L.v = 0.0; // 清零流速
+    }
+    if (W_R.h < hllc_input_dry_threshold) { // 如果右侧水深小于HLLC干阈值
+        // W_R.h = std::max(0.0, W_R.h); // 确保非负
+        if (W_R.h < min_depth) W_R.h = 0.0; // 如果严格小于min_depth，则视为完全干
+        W_R.u = 0.0; // 清零流速
+        W_R.v = 0.0; // 清零流速
+    }
+    // 至此，W_L 和 W_R 是经过输入保护修正后的状态
+
+    // 后续的 dryL, dryR 判断以及 unL, utL, cL 等计算都基于修正后的 W_L, W_R
+    bool dryL = (W_L.h < min_depth); // 使用 min_depth 进行严格的干判断
+    bool dryR = (W_R.h < min_depth); // 使用 min_depth 进行严格的干判断
+
+    if (dryL && dryR) {
+        // if (should_print_debug_local) std::cout << "  HLLC: Both dry, returning zero flux." << std::endl;
+        return {0.0, 0.0, 0.0};
     }
 
-    double unL, utL, unR, utR; // 声明法向和切向速度
-    double cL, cR; // 声明波速
+    // ... HLLC 的其余逻辑（unL, utL, cL, cR, sL, sR, s_star 等计算）使用修正后的 W_L, W_R ...
+    // ... 这部分代码保持不变 ...
+    // (之前提供的HLLC完整代码)
+    double unL, utL, unR, utR;
+    double cL, cR;
 
-    // 将速度旋转到法向 (un) 和切向 (ut)
-    unL = W_L.u * nx + W_L.v * ny; // 左侧法向速度
-    utL = -W_L.u * ny + W_L.v * nx; // 左侧切向速度
-    unR = W_R.u * nx + W_R.v * ny; // 右侧法向速度
-    utR = -W_R.u * ny + W_R.v * nx; // 右侧切向速度
+    // --- 使用修正后的 W_L, W_R 计算旋转速度 ---
+    unL = W_L.u * normal_vec[0] + W_L.v * normal_vec[1];
+    utL = -W_L.u * normal_vec[1] + W_L.v * normal_vec[0];
+    unR = W_R.u * normal_vec[0] + W_R.v * normal_vec[1];
+    utR = -W_R.u * normal_vec[1] + W_R.v * normal_vec[0];
 
-    if (dryL) { // 如果左侧为干
-        W_L.h = 0.0; // 水深设为0
-        cL = 0.0;    // 波速设为0
-        if (!dryR) { // 如果右侧湿
-            // 根据反射或某种假设设定左侧速度
-            unL = -unR; // 法向速度反向
-            utL = utR;  // 切向速度相同
-            // cL 仍然是 0
-            cR = std::sqrt(g * W_R.h); // 计算右侧波速
-        } else { // (dryR is true) 两侧都干，已在前面处理
-            cR = 0.0; // 右侧波速也为0
+    // if (should_print_debug_local) { ... }
+
+    // --- 干区处理，使用修正后的 W_L, W_R 和 dryL, dryR ---
+    if (dryL) { // 左干
+        W_L.h = 0.0; cL = 0.0; // W_L.h 已经被设为0或极小值，这里再次确保
+        if (!dryR) { // 右湿
+            if (unR < 0) {
+                unL = 0.0;
+                utL = 0.0;
+            } else {
+                unL = -unR;
+                utL = utR;
+            }
+            cR = std::sqrt(g * W_R.h); // W_R.h 是修正后的
+        } else { // 右也干
+            cR = 0.0;
         }
-    } else if (dryR) { // 如果右侧为干 (左侧必湿)
-        W_R.h = 0.0; // 水深设为0
-        cR = 0.0;    // 波速设为0
-        unR = -unL; // 法向速度反向
-        utR = utL;  // 切向速度相同
-        cL = std::sqrt(g * W_L.h); // 计算左侧波速
-        // cR 仍然是 0
-    } else { // 两侧都湿
-        cL = std::sqrt(g * W_L.h); // 计算左侧波速
-        cR = std::sqrt(g * W_R.h); // 计算右侧波速
-    }
-
-    // --- 步骤 1: 计算波速 sL, sR (Einfeldt/Davis + 干底修正) ---
-    double sqrt_hL = (W_L.h > 0) ? std::sqrt(W_L.h) : 0.0; // 计算左侧水深平方根
-    double sqrt_hR = (W_R.h > 0) ? std::sqrt(W_R.h) : 0.0; // 计算右侧水深平方根
-    double sqrt_sum = sqrt_hL + sqrt_hR; // 计算平方根之和
-
-    double un_roe, h_roe_for_c, c_roe; // 声明Roe平均值
-    if (sqrt_sum < 1e-9) { // 如果平方根之和过小
-        un_roe = 0.5 * (unL + unR); // Roe平均法向速度用简单平均
-        h_roe_for_c = 0.5 * (W_L.h + W_R.h); // Roe平均水深用简单平均
-    } else { // 否则正常计算
-        un_roe = (sqrt_hL * unL + sqrt_hR * unR) / sqrt_sum; // 计算Roe平均法向速度
-        h_roe_for_c = 0.5 * (W_L.h + W_R.h); // 标准Roe平均水深 h_hat = 0.5*(hL+hR)
-    }
-    c_roe = (h_roe_for_c > 0) ? std::sqrt(g * h_roe_for_c) : 0.0; // 计算Roe平均波速
-
-    double sL_wet = un_roe - c_roe; // Roe左波速（湿）
-    double sR_wet = un_roe + c_roe; // Roe右波速（湿）
-    double sL_simple = unL - cL; // 简单左波速
-    double sR_simple = unR + cR; // 简单右波速
-
-    double sL_davis = std::min(sL_simple, sL_wet); // Davis左波速
-    double sR_davis = std::max(sR_simple, sR_wet); // Davis右波速
-
-    double sL, sR; // 声明最终波速
-    if (dryL) { // 如果左侧为干
-        sL = unR - 2 * cR; // Toro真空波速
-    } else { // 否则
-        sL = sL_davis; // 使用Davis估算
-    }
-    if (dryR) { // 如果右侧为干
-        sR = unL + 2 * cL; // Toro真空波速
-    } else { // 否则
-        sR = sR_davis; // 使用Davis估算
-    }
-
-    if (sL > sR - 1e-9) { // 如果波速交叉或非常接近 (允许一点数值误差)
-        // 这种情况下，HLLC退化为HLL，或者可能意味着一个接触间断
-        // 简单的处理是强制它们分开一点，或者采用更鲁棒的平均值
-        // std::cerr << "Warning: HLLC wave speeds crossed or too close sL=" << sL << ", sR=" << sR << ". Adjusting." << std::endl; // 打印警告
-        double s_avg = 0.5 * (sL + sR); // 计算平均波速
-        sL = s_avg - 1e-6; // 强制分开
-        sR = s_avg + 1e-6; // 强制分开
-        if (sL > sR) { // 极端情况的最后防线
-             sL = std::min(sL_simple,sR_simple) - 1e-6; // 使用简单波速再调整
-             sR = std::max(sL_simple,sR_simple) + 1e-6; // 使用简单波速再调整
+    } else if (dryR) { // 左湿右干
+        W_R.h = 0.0; cR = 0.0; // W_R.h 已经被设为0或极小值
+        // !dryL 隐含为真
+        if (unL > 0) {
+            unR = 0.0;
+            utR = 0.0;
+        } else {
+            unR = -unL;
+            utR = utL;
         }
+        cL = std::sqrt(g * W_L.h); // W_L.h 是修正后的
+    } else { // 两侧都湿 (基于修正后的 W_L, W_R 判断仍然湿)
+        cL = std::sqrt(g * W_L.h);
+        cR = std::sqrt(g * W_R.h);
+    }
+    // ... HLLC后续步骤 ...
+    // ... (sL_final, sR_final, PL, PR, s_star, FL_nt, FR_nt, F_hllc_nt, F_hllc_cartesian) ...
+    // 这部分代码使用已经经过干区处理和速度修正（如果应用了）的 unL, utL, unR, utR, W_L.h, W_R.h
+    // 所以不需要再改动HLLC的这些核心计算步骤。
+
+    // --- (此处省略之前提供的HLLC完整计算逻辑，它应该在这一系列修正之后) ---
+    // 例如:
+    double sqrt_hL = (W_L.h > 0) ? std::sqrt(W_L.h) : 0.0;
+    double sqrt_hR = (W_R.h > 0) ? std::sqrt(W_R.h) : 0.0;
+    // ...一直到 return F_hllc_cartesian;
+
+    // 确保你将上面省略的HLLC计算部分（从sqrt_hL开始到最后）粘贴回来
+    // 这只是为了展示在HLLC最开始的地方加入输入保护。
+
+    // ... (粘贴HLLC计算的剩余部分) ...
+    double sqrt_sum = sqrt_hL + sqrt_hR;
+
+    double un_roe, h_roe_for_c, c_roe;
+    if (sqrt_sum < 1e-9) {
+        un_roe = 0.5 * (unL + unR);
+        h_roe_for_c = 0.5 * (W_L.h + W_R.h);
+    } else {
+        un_roe = (sqrt_hL * unL + sqrt_hR * unR) / sqrt_sum;
+        h_roe_for_c = 0.5 * (W_L.h + W_R.h);
+    }
+    c_roe = (h_roe_for_c > 0) ? std::sqrt(g * h_roe_for_c) : 0.0;
+
+    double sL_wet = un_roe - c_roe;
+    double sR_wet = un_roe + c_roe;
+    double sL_simple = unL - cL;
+    double sR_simple = unR + cR;
+
+    double sL_davis = std::min(sL_simple, sL_wet);
+    double sR_davis = std::max(sR_simple, sR_wet);
+
+    double sL_final, sR_final;
+    if (dryL) {
+        sL_final = unR - 2 * cR;
+    } else {
+        sL_final = sL_davis;
+    }
+    if (dryR) {
+        sR_final = unL + 2 * cL;
+    } else {
+        sR_final = sR_davis;
     }
 
-
-    // --- 步骤 2: 计算中间波速 s_star ---
-    double PL = 0.5 * g * W_L.h * W_L.h; // 计算左侧压力
-    double PR = 0.5 * g * W_R.h * W_R.h; // 计算右侧压力
-
-    double den_s_star = W_L.h * (sL - unL) - W_R.h * (sR - unR); // 计算s_star分母
-    double s_star; // 声明中间波速
-    double epsilon_den = 1e-9; // 分母的容差
-
-    if (std::abs(den_s_star) < epsilon_den) { // 如果分母接近零
-        s_star = un_roe; // 近似为Roe平均速度
-    } else { // 否则
-        s_star = (PR - PL + W_L.h * unL * (sL - unL) - W_R.h * unR * (sR - unR)) / den_s_star; // 计算中间波速
-    }
-
-
-    // --- 步骤 3: 根据区域计算通量 F_hllc_nt (在法向-切向坐标系) ---
-    std::array<double, 3> FL_nt = {W_L.h * unL, W_L.h * unL * unL + PL, W_L.h * unL * utL}; // 左侧法向-切向通量
-    std::array<double, 3> FR_nt = {W_R.h * unR, W_R.h * unR * unR + PR, W_R.h * unR * utR}; // 右侧法向-切向通量
-    std::array<double, 3> F_hllc_nt; // 声明HLLC法向-切向通量
-
-    if (sL >= 0) { // 区域 L
-        F_hllc_nt = FL_nt; // 通量等于左侧通量
-    } else if (sR <= 0) { // 区域 R
-        F_hllc_nt = FR_nt; // 通量等于右侧通量
-    } else { // 星区 (*L or *R)
-        std::array<double, 3> UL_nt = {W_L.h, W_L.h * unL, W_L.h * utL}; // 左侧法向-切向守恒量
-        std::array<double, 3> UR_nt = {W_R.h, W_R.h * unR, W_R.h * utR}; // 右侧法向-切向守恒量
-
-        if (s_star >= 0) { // 区域 *L
-            double h_starL_num = W_L.h * (sL - unL); // 左星区水深分子
-            double h_starL_den = sL - s_star; // 左星区水深分母
-            double h_starL = (std::abs(h_starL_den) < epsilon_den) ? W_L.h : h_starL_num / h_starL_den; // 计算左星区水深（处理分母为0）
-            h_starL = std::max(0.0, h_starL); // 保证水深非负
-
-            std::array<double, 3> U_starL_nt = {h_starL, h_starL * s_star, h_starL * utL}; // 左星区守恒量
-            F_hllc_nt[0] = FL_nt[0] + sL * (U_starL_nt[0] - UL_nt[0]); // 计算通量
-            F_hllc_nt[1] = FL_nt[1] + sL * (U_starL_nt[1] - UL_nt[1]); // 计算通量
-            F_hllc_nt[2] = FL_nt[2] + sL * (U_starL_nt[2] - UL_nt[2]); // 计算通量
-        } else { // 区域 *R
-            double h_starR_num = W_R.h * (sR - unR); // 右星区水深分子
-            double h_starR_den = sR - s_star; // 右星区水深分母
-            double h_starR = (std::abs(h_starR_den) < epsilon_den) ? W_R.h : h_starR_num / h_starR_den; // 计算右星区水深（处理分母为0）
-            h_starR = std::max(0.0, h_starR); // 保证水深非负
-
-            std::array<double, 3> U_starR_nt = {h_starR, h_starR * s_star, h_starR * utR}; // 右星区守恒量
-            F_hllc_nt[0] = FR_nt[0] + sR * (U_starR_nt[0] - UR_nt[0]); // 计算通量
-            F_hllc_nt[1] = FR_nt[1] + sR * (U_starR_nt[1] - UR_nt[1]); // 计算通量
-            F_hllc_nt[2] = FR_nt[2] + sR * (U_starR_nt[2] - UR_nt[2]); // 计算通量
+    if (sL_final > sR_final - 1e-9) {
+        double s_avg = 0.5 * (sL_final + sR_final);
+        sL_final = s_avg - 1e-6;
+        sR_final = s_avg + 1e-6;
+        if (sL_final > sR_final) {
+             sL_final = std::min(sL_simple,sR_simple) - 1e-6;
+             sR_final = std::max(sL_simple,sR_simple) + 1e-6;
         }
     }
 
-    // --- 步骤 4: 将 F_hllc_nt 旋转回笛卡尔坐标系 F_hllc_cartesian ---
-    double Fh_n = F_hllc_nt[0]; // 法向质量通量
-    double Fun_n = F_hllc_nt[1]; // 法向动量通量的法向分量
-    double Fut_n = F_hllc_nt[2]; // 法向动量通量的切向分量
+    double PL = 0.5 * g * W_L.h * W_L.h;
+    double PR = 0.5 * g * W_R.h * W_R.h;
 
-    std::array<double, 3> F_hllc_cartesian; // 声明笛卡尔坐标系通量
-    F_hllc_cartesian[0] = Fh_n; // 质量通量是标量
-    F_hllc_cartesian[1] = Fun_n * nx - Fut_n * ny; // x方向动量通量
-    F_hllc_cartesian[2] = Fun_n * ny + Fut_n * nx; // y方向动量通量
+    double den_s_star = W_L.h * (sL_final - unL) - W_R.h * (sR_final - unR);
+    double s_star;
+    double epsilon_den = 1e-9;
 
-    return F_hllc_cartesian; // 返回最终结果
-} // 结束方法体
+    if (std::abs(den_s_star) < epsilon_den) {
+        s_star = un_roe;
+    } else {
+        s_star = (PR - PL + W_L.h * unL * (sL_final - unL) - W_R.h * unR * (sR_final - unR)) / den_s_star;
+    }
+
+    std::array<double, 3> FL_nt = {W_L.h * unL, W_L.h * unL * unL + PL, W_L.h * unL * utL};
+    std::array<double, 3> FR_nt = {W_R.h * unR, W_R.h * unR * unR + PR, W_R.h * unR * utR};
+    std::array<double, 3> F_hllc_nt;
+
+    if (sL_final >= 0) {
+        F_hllc_nt = FL_nt;
+    } else if (sR_final <= 0) {
+        F_hllc_nt = FR_nt;
+    } else {
+        std::array<double, 3> UL_nt = {W_L.h, W_L.h * unL, W_L.h * utL};
+        std::array<double, 3> UR_nt = {W_R.h, W_R.h * unR, W_R.h * utR};
+        if (s_star >= 0) {
+            double h_starL_num = W_L.h * (sL_final - unL);
+            double h_starL_den = sL_final - s_star;
+            double h_starL = (std::abs(h_starL_den) < epsilon_den) ? W_L.h : h_starL_num / h_starL_den;
+            h_starL = std::max(0.0, h_starL);
+            std::array<double, 3> U_starL_nt = {h_starL, h_starL * s_star, h_starL * utL};
+            for(int k=0; k<3; ++k) F_hllc_nt[k] = FL_nt[k] + sL_final * (U_starL_nt[k] - UL_nt[k]);
+        } else {
+            double h_starR_num = W_R.h * (sR_final - unR);
+            double h_starR_den = sR_final - s_star;
+            double h_starR = (std::abs(h_starR_den) < epsilon_den) ? W_R.h : h_starR_num / h_starR_den;
+            h_starR = std::max(0.0, h_starR);
+            std::array<double, 3> U_starR_nt = {h_starR, h_starR * s_star, h_starR * utR};
+            for(int k=0; k<3; ++k) F_hllc_nt[k] = FR_nt[k] + sR_final * (U_starR_nt[k] - UR_nt[k]);
+        }
+    }
+
+    double Fh_n = F_hllc_nt[0];
+    double Fun_n = F_hllc_nt[1];
+    double Fut_n = F_hllc_nt[2];
+
+    std::array<double, 3> F_hllc_cartesian;
+    F_hllc_cartesian[0] = Fh_n;
+    F_hllc_cartesian[1] = Fun_n * normal_vec[0] - Fut_n * normal_vec[1];
+    F_hllc_cartesian[2] = Fun_n * normal_vec[1] + Fut_n * normal_vec[0];
+
+    // if (should_print_debug_local) { ... } // 调试打印可以放在最后
+
+    return F_hllc_cartesian;
+}
 
 } // namespace HydroCore

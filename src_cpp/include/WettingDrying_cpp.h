@@ -34,8 +34,13 @@ public: // 公有成员
         const std::vector<Node_cpp>& cell_nodes_sorted, // 与b_sorted_vertices对应的已排序节点对象 (用于精确几何)
         double cell_total_area, // 单元总面积
         double eta_previous_guess, // 上一步的eta作为初始猜测 (重要：传入double)
-        const std::string& cell_id_for_debug = "" // 用于调试的单元ID (可选)
+        // 新增的参数需要在这里声明
+        double current_sim_time, // 新增：当前模拟时间
+        int cell_id_int          // 新增：当前单元的整数ID
     ) const; // const成员函数
+
+    // 将其声明为静态成员函数
+    static void set_internal_debug_conditions(bool enable, int target_cell_id, double target_time_min, double target_time_max); // 修改：声明为静态成员函数并重命名
 
 private: // 私有成员
     // 辅助函数：计算给定eta下的水面面积 Aw (精确几何版)
@@ -61,6 +66,12 @@ private: // 私有成员
     int max_vfr_iters; // 最大迭代次数
     double relative_h_tolerance; // 相对水深误差收敛阈值
     double epsilon; // 用于避免除零的小量
+
+    // 将调试变量声明为静态成员变量
+    static bool s_vfr_internal_debug_enabled; // 修改：声明为静态成员变量
+    static int s_vfr_debug_target_cell_id;    // 修改：声明为静态成员变量
+    static double s_vfr_debug_target_time_min; // 修改：声明为静态成员变量
+    static double s_vfr_debug_target_time_max;  // 修改：声明为静态成员变量
 }; // 结束类定义
 
 } // namespace HydroCore

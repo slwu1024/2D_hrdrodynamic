@@ -1,7 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <module type="PYTHON_MODULE" version="4">
   <component name="NewModuleRootManager">
-    <content url="file://$MODULE_DIR$" />
+    <content url="file://$MODULE_DIR$">
+      <excludeFolder url="file://$MODULE_DIR$/_skbuild/win-amd64-3.10/cmake-build/CMakeFiles/4.0.2/CompilerIdCXX/tmp" />
+      <excludeFolder url="file://$MODULE_DIR$/_skbuild/win-amd64-3.10/cmake-build/CMakeFiles/CMakeScratch" />
+      <excludeFolder url="file://$MODULE_DIR$/_skbuild/win-amd64-3.10/cmake-build/CMakeFiles/pkgRedirects" />
+      <excludeFolder url="file://$MODULE_DIR$/_skbuild/win-amd64-3.10/cmake-build/extern/pybind11/CMakeFiles" />
+      <excludeFolder url="file://$MODULE_DIR$/_skbuild/win-amd64-3.10/cmake-install" />
+      <excludeFolder url="file://$MODULE_DIR$/_skbuild/win-amd64-3.10/setuptools" />
+      <excludeFolder url="file://$MODULE_DIR$/hydro_model_pkg.egg-info" />
+      <excludeFolder url="file://$MODULE_DIR$/output" />
+      <excludeFolder url="file://$MODULE_DIR$/src_cpp/.idea" />
+      <excludeFolder url="file://$MODULE_DIR$/src_cpp/cmake-build-debug/.cmake" />
+      <excludeFolder url="file://$MODULE_DIR$/src_cpp/cmake-build-debug/CMakeFiles" />
+      <excludeFolder url="file://$MODULE_DIR$/src_cpp/cmake-build-debug/Testing" />
+      <excludeFolder url="file://$MODULE_DIR$/src_cpp/cmake-build-debug/extern" />
+      <excludeFolder url="file://$MODULE_DIR$/src_cpp/extern/eigen/Eigen/src/Core" />
+      <excludeFolder url="file://$MODULE_DIR$/算例" />
+      <excludeFolder url="file://$MODULE_DIR$/算例/00 简单水槽测试边界条件/output_simple_channel_wl" />
+      <excludeFolder url="file://$MODULE_DIR$/论文/干湿边界" />
+    </content>
     <orderEntry type="jdk" jdkName="Python 3.10" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>

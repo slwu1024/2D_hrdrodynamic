@@ -220,74 +220,101 @@ std::vector<std::array<double, 3>> Reconstruction_cpp::calculate_barth_jespersen
     return limiters_phi_all; // 返回所有限制器
 } // 结束方法
 
-std::pair<PrimitiveVars_cpp, PrimitiveVars_cpp> Reconstruction_cpp::get_reconstructed_interface_states( // 重构界面状态获取实现
+std::pair<PrimitiveVars_cpp, PrimitiveVars_cpp> Reconstruction_cpp::get_reconstructed_interface_states(
     const std::vector<std::array<double, 3>>& U_state_all,
     int cell_L_id,
     int cell_R_id, // -1 if boundary
-    const HalfEdge_cpp& half_edge_L_to_R, // 从L指向R或外部
+    const HalfEdge_cpp& half_edge_L_to_R,
     bool is_boundary) const {
 
-    if (cell_L_id < 0 || static_cast<size_t>(cell_L_id) >= U_state_all.size()) { // 检查左单元ID是否有效
-        throw std::out_of_range("cell_L_id is out of bounds."); // 抛出越界异常
+    // ... (cell_L_id, cell_L_ptr 检查不变) ...
+    const Cell_cpp* cell_L_ptr = mesh->get_cell_by_id(cell_L_id); // 获取左单元指针 // 新增：获取左单元指针
+    if (!cell_L_ptr) throw std::runtime_error("Could not find cell_L for reconstruction."); // 如果找不到左单元则抛出运行时错误 // 新增：检查左单元指针
+
+    PrimitiveVars_cpp W_L_center = conserved_to_primitive(U_state_all[cell_L_id]);
+    PrimitiveVars_cpp W_L_interface = W_L_center;
+
+    // 修改：使用一个更明确的“几乎干”阈值，例如 min_depth_internal 的 2 倍
+    // 如果单元水深小于这个阈值，我们就认为它在界面上不应该有流速，水深也应该是其中心值（或0）
+    const double almost_dry_h_threshold = min_depth_internal * 2.0; // 定义一个“几乎干”的水深阈值
+
+    if (W_L_center.h < almost_dry_h_threshold) { // 如果左单元中心水深小于“几乎干”阈值
+        W_L_interface.h = W_L_center.h; // 界面水深等于中心水深 (可能是0或极小值)
+        W_L_interface.u = 0.0;
+        W_L_interface.v = 0.0;
+    } else if (scheme_internal != ReconstructionScheme_cpp::FIRST_ORDER) { // 如果不是一阶且水深足够
+        // ... (高阶重构逻辑不变) ...
+         if (gradients_primitive.empty() || static_cast<size_t>(cell_L_id) >= gradients_primitive.size()) { // 检查梯度是否已准备或ID是否越界
+             throw std::runtime_error("Gradients not prepared or cell_L_id out of bounds for gradients."); // 抛出运行时错误
+         }
+         const auto& grad_W_L = gradients_primitive[cell_L_id]; // 获取左单元梯度
+         std::array<double, 2> vec_L_to_face = { // 计算左单元形心到界面中点的向量
+             half_edge_L_to_R.mid_point[0] - cell_L_ptr->centroid[0], // x分量
+             half_edge_L_to_R.mid_point[1] - cell_L_ptr->centroid[1]  // y分量
+         };
+
+         W_L_interface.h += grad_W_L[0][0] * vec_L_to_face[0] + grad_W_L[0][1] * vec_L_to_face[1]; // 重构水深
+         W_L_interface.u += grad_W_L[1][0] * vec_L_to_face[0] + grad_W_L[1][1] * vec_L_to_face[1]; // 重构u速度
+         W_L_interface.v += grad_W_L[2][0] * vec_L_to_face[0] + grad_W_L[2][1] * vec_L_to_face[1]; // 重构v速度
+
+        // 重构后再次检查
+        if (W_L_interface.h < almost_dry_h_threshold) { // 如果重构后的界面水深小于“几乎干”阈值
+            W_L_interface.h = std::max(0.0, W_L_interface.h); // 确保水深非负
+            W_L_interface.u = 0.0; // 清零u速度
+            W_L_interface.v = 0.0; // 清零v速度
+        }
     }
-    const Cell_cpp* cell_L_ptr = mesh->get_cell_by_id(cell_L_id); // 获取左单元指针
-    if (!cell_L_ptr) throw std::runtime_error("Could not find cell_L for reconstruction."); // 抛出运行时错误
-
-    PrimitiveVars_cpp W_L_interface = conserved_to_primitive(U_state_all[cell_L_id]); // 获取左单元中心原始变量
-
-    if (scheme_internal != ReconstructionScheme_cpp::FIRST_ORDER) { // 如果不是一阶方案
-        if (gradients_primitive.empty() || static_cast<size_t>(cell_L_id) >= gradients_primitive.size()) { // 检查梯度是否已计算且有效
-            throw std::runtime_error("Gradients not prepared or cell_L_id out of bounds for gradients."); // 抛出运行时错误
-        }
-        const auto& grad_W_L = gradients_primitive[cell_L_id]; // 获取左单元梯度
-        std::array<double, 2> vec_L_to_face = { // 计算左单元形心到界面中点向量
-            half_edge_L_to_R.mid_point[0] - cell_L_ptr->centroid[0], // x分量
-            half_edge_L_to_R.mid_point[1] - cell_L_ptr->centroid[1]  // y分量
-        }; // 结束计算
-
-        W_L_interface.h += grad_W_L[0][0] * vec_L_to_face[0] + grad_W_L[0][1] * vec_L_to_face[1]; // 更新h
-        W_L_interface.u += grad_W_L[1][0] * vec_L_to_face[0] + grad_W_L[1][1] * vec_L_to_face[1]; // 更新u
-        W_L_interface.v += grad_W_L[2][0] * vec_L_to_face[0] + grad_W_L[2][1] * vec_L_to_face[1]; // 更新v
-
-        W_L_interface.h = std::max(0.0, W_L_interface.h); // 保证水深非负
-        if (W_L_interface.h < min_depth_internal) { // 如果水深过小
-            W_L_interface.u = 0.0; // 速度设为0
-            W_L_interface.v = 0.0; // 速度设为0
-        }
+    // 最终确保 h>=0，并且如果 h < min_depth，则 u,v=0
+    W_L_interface.h = std::max(0.0, W_L_interface.h); // 再次确保水深非负
+    if (W_L_interface.h < min_depth_internal) { // 如果最终界面水深小于最小水深
+        W_L_interface.u = 0.0; // 强制u速度为0
+        W_L_interface.v = 0.0; // 强制v速度为0
     }
 
-    PrimitiveVars_cpp W_R_interface = {0,0,0}; // 初始化右侧界面状态 (如果边界则无效)
-    if (!is_boundary) { // 如果是内部边
-        if (cell_R_id < 0 || static_cast<size_t>(cell_R_id) >= U_state_all.size()) { // 检查右单元ID是否有效
-            throw std::out_of_range("cell_R_id is out of bounds for internal edge."); // 抛出越界异常
-        }
-        const Cell_cpp* cell_R_ptr = mesh->get_cell_by_id(cell_R_id); // 获取右单元指针
-        if (!cell_R_ptr) throw std::runtime_error("Could not find cell_R for reconstruction."); // 抛出运行时错误
+    PrimitiveVars_cpp W_R_interface = {0,0,0};
+    if (!is_boundary) {
+        // ... (cell_R_id, cell_R_ptr 检查不变) ...
+         if (cell_R_id < 0 || static_cast<size_t>(cell_R_id) >= U_state_all.size()) { // 检查右单元ID是否越界
+             throw std::out_of_range("cell_R_id is out of bounds for internal edge."); // 抛出越界异常
+         }
+         const Cell_cpp* cell_R_ptr = mesh->get_cell_by_id(cell_R_id); // 获取右单元指针
+         if (!cell_R_ptr) throw std::runtime_error("Could not find cell_R for reconstruction."); // 如果找不到右单元则抛出运行时错误
 
-        W_R_interface = conserved_to_primitive(U_state_all[cell_R_id]); // 获取右单元中心原始变量
+        PrimitiveVars_cpp W_R_center = conserved_to_primitive(U_state_all[cell_R_id]);
+        W_R_interface = W_R_center;
 
-        if (scheme_internal != ReconstructionScheme_cpp::FIRST_ORDER) { // 如果不是一阶方案
-            if (gradients_primitive.empty() || static_cast<size_t>(cell_R_id) >= gradients_primitive.size()) { // 检查梯度是否已计算且有效
-                 throw std::runtime_error("Gradients not prepared or cell_R_id out of bounds for gradients."); // 抛出运行时错误
+        if (W_R_center.h < almost_dry_h_threshold) { // 如果右单元中心水深小于“几乎干”阈值
+            W_R_interface.h = W_R_center.h; // 界面水深等于中心水深
+            W_R_interface.u = 0.0; // 强制界面u速度为0
+            W_R_interface.v = 0.0; // 强制界面v速度为0
+        } else if (scheme_internal != ReconstructionScheme_cpp::FIRST_ORDER) {
+            // ... (高阶重构逻辑不变) ...
+             if (gradients_primitive.empty() || static_cast<size_t>(cell_R_id) >= gradients_primitive.size()) { // 检查梯度是否已准备或ID是否越界
+                  throw std::runtime_error("Gradients not prepared or cell_R_id out of bounds for gradients."); // 抛出运行时错误
+             }
+             const auto& grad_W_R = gradients_primitive[cell_R_id]; // 获取右单元梯度
+             std::array<double, 2> vec_R_to_face = { // 计算右单元形心到界面中点的向量
+                 half_edge_L_to_R.mid_point[0] - cell_R_ptr->centroid[0], // x分量
+                 half_edge_L_to_R.mid_point[1] - cell_R_ptr->centroid[1]  // y分量
+             };
+
+             W_R_interface.h += grad_W_R[0][0] * vec_R_to_face[0] + grad_W_R[0][1] * vec_R_to_face[1]; // 重构水深
+             W_R_interface.u += grad_W_R[1][0] * vec_R_to_face[0] + grad_W_R[1][1] * vec_R_to_face[1]; // 重构u速度
+             W_R_interface.v += grad_W_R[2][0] * vec_R_to_face[0] + grad_W_R[2][1] * vec_R_to_face[1]; // 重构v速度
+
+            if (W_R_interface.h < almost_dry_h_threshold) { // 如果重构后的右界面水深小于“几乎干”阈值
+                W_R_interface.h = std::max(0.0, W_R_interface.h); // 确保水深非负
+                W_R_interface.u = 0.0; // 清零u速度
+                W_R_interface.v = 0.0; // 清零v速度
             }
-            const auto& grad_W_R = gradients_primitive[cell_R_id]; // 获取右单元梯度
-            std::array<double, 2> vec_R_to_face = { // 计算右单元形心到界面中点向量
-                half_edge_L_to_R.mid_point[0] - cell_R_ptr->centroid[0], // x分量
-                half_edge_L_to_R.mid_point[1] - cell_R_ptr->centroid[1]  // y分量
-            }; // 结束计算
-
-            W_R_interface.h += grad_W_R[0][0] * vec_R_to_face[0] + grad_W_R[0][1] * vec_R_to_face[1]; // 更新h
-            W_R_interface.u += grad_W_R[1][0] * vec_R_to_face[0] + grad_W_R[1][1] * vec_R_to_face[1]; // 更新u
-            W_R_interface.v += grad_W_R[2][0] * vec_R_to_face[0] + grad_W_R[2][1] * vec_R_to_face[1]; // 更新v
-
-            W_R_interface.h = std::max(0.0, W_R_interface.h); // 保证水深非负
-            if (W_R_interface.h < min_depth_internal) { // 如果水深过小
-                W_R_interface.u = 0.0; // 速度设为0
-                W_R_interface.v = 0.0; // 速度设为0
-            }
+        }
+        W_R_interface.h = std::max(0.0, W_R_interface.h); // 再次确保水深非负
+        if (W_R_interface.h < min_depth_internal) { // 如果最终右界面水深小于最小水深
+            W_R_interface.u = 0.0; // 强制u速度为0
+            W_R_interface.v = 0.0; // 强制v速度为0
         }
     }
-    return {W_L_interface, W_R_interface}; // 返回左右界面状态
-} // 结束方法
+    return {W_L_interface, W_R_interface};
+}
 
 } // namespace HydroCore

@@ -155,7 +155,8 @@ PYBIND11_MODULE(hydro_model_cpp, m) { // 定义Python模块，名称为 hydro_mo
         .def("get_eta_from_h", &VFRCalculator_cpp::get_eta_from_h, // 绑定 get_eta_from_h 方法
              py::arg("h_avg"), py::arg("b_sorted_vertices"), // 参数
              py::arg("cell_nodes_sorted"), py::arg("cell_total_area"), // 参数
-             py::arg("eta_previous_guess"), py::arg("cell_id_for_debug") = "", // 参数及默认值
+             py::arg("eta_previous_guess"), py::arg("current_sim_time"), // 新增：对应 double current_sim_time
+             py::arg("cell_id_int"),      // 新增：对应 int cell_id_int // 参数及默认值
              "Calculates eta from h_avg using Newton's method with VFR."); // 方法文档字符串
 
     py::class_<Reconstruction_cpp>(m, "Reconstruction_cpp") // 绑定 Reconstruction_cpp 类

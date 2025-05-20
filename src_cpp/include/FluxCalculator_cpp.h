@@ -35,11 +35,21 @@ namespace HydroCore { // 定义HydroCore命名空间
 
         // 新增：公有 getter 方法
         RiemannSolverType_cpp get_solver_type() const { return solver_type_internal; } // 获取求解器类型
+        static void set_debug_conditions(bool enable, double x_min, double x_max, double t_min, double t_max, int he_id = -1); // 新增：在FluxCalculator_cpp.h中声明设置HLLC调试条件的函数
 
     private: // 私有成员
         double g;         // 重力加速度
         double min_depth; // 最小水深阈值
         RiemannSolverType_cpp solver_type_internal; // 内部存储的求解器类型
+        // 将调试变量也声明为静态成员变量（可以在.cpp中定义和初始化）
+
+        const double epsilon = 1e-12;
+        static bool s_debug_print_enabled; // 修改：声明为静态成员变量
+        static double s_debug_target_x_min; // 修改：声明为静态成员变量
+        static double s_debug_target_x_max; // 修改：声明为静态成员变量
+        static double s_debug_target_time_min; // 修改：声明为静态成员变量
+        static double s_debug_target_time_max; // 修改：声明为静态成员变量
+        static int s_debug_target_he_id;    // 修改：声明为静态成员变量
     }; // 结束类定义
 
 } // namespace HydroCore
