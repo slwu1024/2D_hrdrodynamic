@@ -261,6 +261,128 @@ void HydroModelCore_cpp::setup_internal_flow_source(
     std::cout << "  Line '" << line_name << "': Total length = " << current_line_total_length << std::endl;
 }
 
+void HydroModelCore_cpp::setup_internal_point_source_cpp(
+    const std::string& name,
+    const std::array<double, 2>& coordinates,
+    const std::vector<TimeseriesPoint_cpp>& q_timeseries
+) {
+    if (!mesh_internal_ptr) { // 检查网格指针是否有效
+        std::cerr << "ERROR (setup_internal_point_source_cpp): Mesh not initialized for point source '" << name << "'." << std::endl; // 打印错误
+        return; // 返回
+    }
+
+    std::cout << "C++ HydroModelCore: Setting up internal point source '" << name << "' at coordinates ("
+              << coordinates[0] << ", " << coordinates[1] << ")." << std::endl; // 打印设置信息
+    std::cout << "  Received " << q_timeseries.size() << " timeseries points for Q." << std::endl; // 打印接收到的时程点数
+
+    int target_cell_id = mesh_internal_ptr->find_cell_containing_point(coordinates[0], coordinates[1]); // 查找包含该坐标的单元
+
+    if (target_cell_id == -1) { // 如果未找到单元
+        std::cerr << "WARNING (setup_internal_point_source_cpp): Could not find a cell containing coordinates ("
+                  << coordinates[0] << ", " << coordinates[1] << ") for point source '" << name << "'. This source will be inactive." << std::endl; // 打印警告
+        // --- 新增的详细调试信息 ---
+        std::cerr << "  Debugging find_cell_containing_point for (" << coordinates[0] << ", " << coordinates[1] << "):" << std::endl;
+        double min_dist_sq_to_centroid = std::numeric_limits<double>::max();
+        int closest_cell_id = -1;
+        for(const auto& cell_debug : mesh_internal_ptr->cells){
+            double dx_c = cell_debug.centroid[0] - coordinates[0];
+            double dy_c = cell_debug.centroid[1] - coordinates[1];
+            double dist_sq = dx_c * dx_c + dy_c * dy_c;
+            if(dist_sq < min_dist_sq_to_centroid){
+                min_dist_sq_to_centroid = dist_sq;
+                closest_cell_id = cell_debug.id;
+            }
+        }
+        if(closest_cell_id != -1){
+            const Cell_cpp* closest_c_ptr = mesh_internal_ptr->get_cell_by_id(closest_cell_id);
+            if(closest_c_ptr){
+                std::cerr << "    Closest cell found by centroid distance is ID: " << closest_cell_id
+                          << ", Centroid: (" << closest_c_ptr->centroid[0] << ", " << closest_c_ptr->centroid[1] << ")"
+                          << ", Distance_sq: " << min_dist_sq_to_centroid << std::endl;
+                if (closest_c_ptr->node_ids.size() == 3) {
+                    const Node_cpp* n0_dbg = mesh_internal_ptr->get_node_by_id(closest_c_ptr->node_ids[0]);
+                    const Node_cpp* n1_dbg = mesh_internal_ptr->get_node_by_id(closest_c_ptr->node_ids[1]);
+                    const Node_cpp* n2_dbg = mesh_internal_ptr->get_node_by_id(closest_c_ptr->node_ids[2]);
+                    if (n0_dbg && n1_dbg && n2_dbg) {
+                        std::cerr << "      Closest cell nodes: "
+                                  << "N0(" << n0_dbg->x << "," << n0_dbg->y << "), "
+                                  << "N1(" << n1_dbg->x << "," << n1_dbg->y << "), "
+                                  << "N2(" << n2_dbg->x << "," << n2_dbg->y << ")" << std::endl;
+                    }
+                }
+            }
+        } else {
+            std::cerr << "    Could not find any closest cell (mesh might be empty or other issue)." << std::endl;
+        }
+        // --- 详细调试信息结束 ---
+    } else { // 如果找到了单元
+        std::cout << "  Point source '" << name << "' will be applied to cell ID: " << target_cell_id << std::endl; // 打印目标单元ID
+    }
+
+    PointSourceInfo_cpp ps_info; // 创建点源信息对象
+    ps_info.name = name; // 设置名称
+    ps_info.target_cell_id = target_cell_id; // 设置目标单元ID
+    ps_info.q_timeseries = q_timeseries; // 设置流量时程
+
+    // 如果时程数据非空，确保它是按时间排序的
+    if (!ps_info.q_timeseries.empty()) { // 如果时程非空
+        std::sort(ps_info.q_timeseries.begin(), ps_info.q_timeseries.end(),
+                  [](const TimeseriesPoint_cpp& a, const TimeseriesPoint_cpp& b) { // lambda排序函数
+                      return a.time < b.time; // 按时间升序排序
+                  });
+    }
+    internal_point_sources_info_internal.push_back(ps_info); // 将点源信息添加到内部存储列表
+}
+
+StateVector HydroModelCore_cpp::_apply_point_sources_internal(const StateVector& U_input, double dt, double time_current) {
+    StateVector U_output = U_input; // 复制输入状态作为输出基础
+
+    if (internal_point_sources_info_internal.empty()) { // 如果没有配置点源
+        return U_output; // 直接返回
+    }
+
+    // 仅在需要时打印调试信息 (可以根据需要注释掉)
+    // std::cout << "DEBUG _apply_point_sources_internal at t=" << time_current << ", dt=" << dt << std::endl;
+
+    for (const auto& ps_info : internal_point_sources_info_internal) { // 遍历所有点源
+        if (ps_info.target_cell_id == -1) { // 如果该点源没有有效的目标单元
+            // std::cout << "  Skipping point source '" << ps_info.name << "' as target_cell_id is -1." << std::endl;
+            continue; // 跳过此点源
+        }
+
+        // 从时程插值获取当前点源流量 Q_point (m^3/s)
+        double current_Q_point = get_timeseries_value_internal(ps_info.q_timeseries, time_current); // 调用内部方法获取时程值
+        if (std::isnan(current_Q_point)) { // 如果插值失败
+            // std::cerr << "WARNING (_apply_point_sources_internal line '" << ps_info.name << "'): Could not get timeseries value for Q at t=" << time_current << ". Assuming Q=0." << std::endl;
+            current_Q_point = 0.0; // 假设流量为0
+        }
+
+        const Cell_cpp* target_cell = mesh_internal_ptr->get_cell_by_id(ps_info.target_cell_id); // 获取目标单元指针
+        if (!target_cell || target_cell->area < epsilon) { // 如果目标单元无效或面积过小
+            // std::cerr << "WARNING (_apply_point_sources_internal): Invalid target cell or zero area for point source '" << ps_info.name << "' (cell_id: " << ps_info.target_cell_id << "). Skipping." << std::endl;
+            continue; // 跳过
+        }
+
+        // 计算体积变化 (m^3)
+        double delta_V_total = current_Q_point * dt; // 体积变化 = 流量 * 时间步长
+
+        // 计算由于点源导致的水深变化 (dU_h)
+        double dU_h_point_source = delta_V_total / target_cell->area; // 水深变化 = 体积变化 / 单元面积
+
+        // 应用到目标单元的水深
+        U_output[ps_info.target_cell_id][0] += dU_h_point_source; // 更新水深守恒量
+
+        // (仅质量源，不修改动量 U[1], U[2])
+
+        // 调试打印 (可选)点源流量，成功运行已经屏蔽
+        // if (std::abs(current_Q_point) > epsilon) { // 仅当流量不为零时打印
+        //     std::cout << "  PointSource '" << ps_info.name << "' (Cell " << ps_info.target_cell_id
+        //               << "): Q=" << current_Q_point << " m^3/s, dH=" << dU_h_point_source << " m (Area=" << target_cell->area << ")" << std::endl;
+        // }
+    }
+    return U_output; // 返回修改后的状态向量
+}
+
 StateVector HydroModelCore_cpp::_apply_internal_flow_source_terms(const StateVector& U_input, double dt, double time_current) {
     StateVector U_output = U_input; // 复制输入状态
 
@@ -955,7 +1077,15 @@ bool HydroModelCore_cpp::advance_one_step() {
             std::cerr << "Error during time integration step: " << e.what() << std::endl; throw;
         }
         // *** 在这里应用内部流量源项 ***
-        U_state_all_internal = _apply_internal_flow_source_terms(U_after_explicit_step, this->last_calculated_dt_internal, current_time_internal);
+        StateVector U_after_sources = U_after_explicit_step; // 从显式时间步进后的结果开始
+
+        // 应用内部线源 (如果存在)
+        U_after_sources = _apply_internal_flow_source_terms(U_after_sources, this->last_calculated_dt_internal, current_time_internal);
+
+        // 应用内部点源 (如果存在)
+        U_after_sources = _apply_point_sources_internal(U_after_sources, this->last_calculated_dt_internal, current_time_internal);
+
+        U_state_all_internal = U_after_sources; // 将所有源项应用后的结果赋给内部状态
         // ******************************
 
         _handle_dry_cells_and_update_eta_internal(); // 然后处理干湿和更新水位

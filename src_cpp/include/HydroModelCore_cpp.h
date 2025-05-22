@@ -24,6 +24,15 @@ namespace HydroCore { // HydroCore命名空间开始
 
 using StateVector = std::vector<std::array<double, 3>>; // 定义状态向量类型别名
 
+// --- 新增：用于点源信息的结构体 ---
+struct PointSourceInfo_cpp { // 定义点源信息结构体
+    std::string name;        // 点源名称
+    int target_cell_id;    // 施加点源的目标单元ID (如果为-1，表示未找到单元)
+    std::array<double, 2> original_coordinates; // 存储配置文件中指定的原始坐标，用于调试或记录
+    std::vector<TimeseriesPoint_cpp> q_timeseries; // 流量时程 (m^3/s), 正值注入，负值抽取
+};
+// --- 点源信息结构体结束 ---
+
 class HydroModelCore_cpp { // 水动力模型核心类
 public: // 公有成员
     HydroModelCore_cpp(); // 修改后的构造函数 (不再接收Mesh_cpp*)
@@ -48,6 +57,13 @@ public: // 公有成员
         const std::vector<TimeseriesPoint_cpp>& q_timeseries, // 该线的流量时程数据
         const std::array<double, 2>& direction_py           // 流量方向
     );
+    // --- 新增：公开的设置内部点源的方法 ---
+    void setup_internal_point_source_cpp( // 新增：设置内部点源 (C++)
+        const std::string& name,
+        const std::array<double, 2>& coordinates, // 从Python接收坐标
+        const std::vector<TimeseriesPoint_cpp>& q_timeseries // 对应的流量时程
+    );
+    // --- 设置内部点源方法结束 ---
 
     void set_initial_conditions_cpp(const StateVector& U_initial); // 设置初始条件(C++)
     void setup_boundary_conditions_cpp( // 设置边界条件(C++)
@@ -84,7 +100,9 @@ private: // 私有成员
     void _initialize_manning_from_mesh_internal(); // 从网格初始化曼宁系数(内部)
     StateVector _apply_internal_flow_source_terms(const StateVector& U_input, double dt, double time_current); // 修改：参数名与实现匹配
 
-    // 新增: 时程插值辅助函数
+    // --- 新增：私有的应用内部点源的方法 ---
+    StateVector _apply_point_sources_internal(const StateVector& U_input, double dt, double time_current); // 新增：应用点源 (内部)
+    // --- 应用内部点源方法结束 ---
     double get_timeseries_value_internal(const std::vector<TimeseriesPoint_cpp>& series, double time_current) const;
 
     std::unique_ptr<Mesh_cpp> mesh_internal_ptr; // HydroModelCore拥有Mesh对象
@@ -109,6 +127,9 @@ private: // 私有成员
     std::map<std::string, double> internal_flow_line_total_lengths_map_internal;                     // 存储总长度
     std::map<std::string, std::array<double, 2>> internal_flow_directions_map_internal;              // 存储方向
 
+    // --- 新增：用于存储所有点源配置的成员变量 ---
+    std::vector<PointSourceInfo_cpp> internal_point_sources_info_internal; // 新增：存储所有点源信息
+    // --- 点源配置成员变量结束 ---
 
     StateVector U_state_all_internal; // 内部存储的守恒量
     std::vector<double> eta_previous_internal; // 内部存储的上一时刻水位

@@ -43,7 +43,9 @@ PYBIND11_MODULE(hydro_model_cpp, m) { // 定义Python模块，名称为 hydro_mo
         .def_readwrite("length", &HalfEdge_cpp::length)               // 绑定长度属性
         .def_readwrite("normal", &HalfEdge_cpp::normal)               // 绑定法向量属性 (std::array<double, 2>)
         .def_readwrite("mid_point", &HalfEdge_cpp::mid_point)         // 绑定中点属性 (std::array<double, 2>)
-        .def_readwrite("boundary_marker", &HalfEdge_cpp::boundary_marker); // 绑定边界标记属性
+        .def_readwrite("boundary_marker", &HalfEdge_cpp::boundary_marker) // 绑定边界标记属性
+        // 新增绑定 original_poly_segment_id (如果你的 HalfEdge_cpp 结构体中有这个成员并且你想从Python访问)
+        .def_readwrite("original_poly_segment_id", &HalfEdge_cpp::original_poly_segment_id); // 绑定原始线段ID属性
 
     py::class_<Cell_cpp>(m, "Cell_cpp") // 绑定 Cell_cpp 类
         .def(py::init<int>(), py::arg("id") = -1) // 绑定构造函数
@@ -55,7 +57,9 @@ PYBIND11_MODULE(hydro_model_cpp, m) { // 定义Python模块，名称为 hydro_mo
         .def_readwrite("z_bed_centroid", &Cell_cpp::z_bed_centroid) // 绑定形心底高程属性
         .def_readwrite("b_slope_x", &Cell_cpp::b_slope_x)       // 绑定x方向底坡属性
         .def_readwrite("b_slope_y", &Cell_cpp::b_slope_y)       // 绑定y方向底坡属性
-        .def_readwrite("manning_n", &Cell_cpp::manning_n);     // 绑定曼宁系数属性
+        .def_readwrite("manning_n", &Cell_cpp::manning_n)     // 绑定曼宁系数属性
+        // 新增绑定 region_attribute (如果你的 Cell_cpp 结构体中有这个成员并且你想从Python访问)
+        .def_readwrite("region_attribute", &Cell_cpp::region_attribute); // 绑定区域属性
 
     py::class_<Mesh_cpp>(m, "Mesh_cpp") // 绑定 Mesh_cpp 类 (保持原名)
         .def(py::init<>()) // 默认构造函数
@@ -83,7 +87,12 @@ PYBIND11_MODULE(hydro_model_cpp, m) { // 定义Python模块，名称为 hydro_mo
             return *he; // 返回半边的副本
         }, py::arg("he_id"), py::return_value_policy::copy, // 返回策略：副本
            "Returns a copy of the half-edge with the specified ID.") // 方法文档字符串
-        .def("get_cell_region_attribute", &Mesh_cpp::get_cell_region_attribute); // <--- 新增绑定
+        .def("get_cell_region_attribute", &Mesh_cpp::get_cell_region_attribute, // 绑定获取区域属性的方法
+             py::arg("cell_id"), "Returns the region attribute of the specified cell.") // 参数和文档
+        // 新增绑定 find_cell_containing_point
+        .def("find_cell_containing_point", &Mesh_cpp::find_cell_containing_point, // 绑定查找单元的方法
+             py::arg("x"), py::arg("y"), // 参数：x坐标，y坐标
+             "Finds the ID of the cell containing the given (x,y) coordinates. Returns -1 if not found."); // 文档字符串
 
 
     py::class_<PrimitiveVars_cpp>(m, "PrimitiveVars_cpp") // 绑定 PrimitiveVars_cpp 结构体
@@ -248,15 +257,19 @@ PYBIND11_MODULE(hydro_model_cpp, m) { // 定义Python模块，名称为 hydro_mo
         .def("get_mesh_ptr", &HydroModelCore_cpp::get_mesh_ptr, // *** 改回 get_mesh_ptr ***
             py::return_value_policy::reference_internal,
             "Returns a const pointer to the internal mesh object (for inspection only).") // 方法文档字符串
-        // ************************** 新增绑定 **************************
         .def("setup_internal_flow_source", &HydroModelCore_cpp::setup_internal_flow_source,
              py::arg("line_name"),                     // 参数1: line_name
              py::arg("poly_node_ids_for_line_py"),    // 参数2: poly_node_ids_for_line_py
              py::arg("q_timeseries"),                  // 参数3: q_timeseries
              py::arg("direction_py"),                  // 参数4: direction_py
              "Sets up an internal flow source line with timeseries support.") // 文档字符串
-        // ***********************************************************
-
+        // --- 新增：为 setup_internal_point_source_cpp 添加绑定 ---
+        .def("setup_internal_point_source_cpp", &HydroModelCore_cpp::setup_internal_point_source_cpp, // 绑定新方法
+             py::arg("name"),                                  // 参数1: name (std::string)
+             py::arg("coordinates"),                           // 参数2: coordinates (std::array<double, 2>)
+             py::arg("q_timeseries"),                          // 参数3: q_timeseries (std::vector<TimeseriesPoint_cpp>)
+             "Sets up an internal point source at specified coordinates with timeseries support.") // 文档字符串
+        // --- 绑定结束 ---
         .def("get_U_state_all_py", // 获取U状态 (NumPy)
             [](const HydroModelCore_cpp &self) { // lambda函数
                 StateVector u_vec = self.get_U_state_all_internal_copy(); // 获取C++数据副本

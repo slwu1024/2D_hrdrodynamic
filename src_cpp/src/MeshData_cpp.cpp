@@ -14,6 +14,7 @@
 #define WIN32_LEAN_AND_MEAN // 排除不常用的Windows头文件
 #include <windows.h> // 引入Windows API头文件，用于字符转换
 #endif
+const double epsilon = 1e-6; // 定义一个用于几何比较的小量
 
 namespace HydroCore { // HydroCore命名空间开始
 
@@ -601,6 +602,40 @@ void Mesh_cpp::assign_boundary_markers_to_halfedges_cpp(const std::vector<int>& 
     }
     std::cout << "DEBUG_ASSIGN_BC_MARKERS: Assigned markers to " << assigned_count << " boundary half-edges." << std::endl;
     // std::cout << "  C++: 已为 " << assigned_count << " 个边界半边分配了标记和原始Segment ID。" << std::endl;
+}
+
+// 实现新增的方法
+int Mesh_cpp::find_cell_containing_point(double x, double y) const {
+    // 遍历所有单元
+    for (const auto& cell : cells) {
+        if (cell.node_ids.size() != 3) continue; // 只处理三角形单元
+
+        const Node_cpp* n0 = get_node_by_id(cell.node_ids[0]);
+        const Node_cpp* n1 = get_node_by_id(cell.node_ids[1]);
+        const Node_cpp* n2 = get_node_by_id(cell.node_ids[2]);
+
+        if (!n0 || !n1 || !n2) continue; // 跳过无效节点组成的单元
+
+        // 使用面积法或叉乘法判断点是否在三角形内
+        // 计算三角形三个顶点与测试点形成的三个小三角形的面积（或其两倍，即叉乘的Z分量）
+        // 如果三个小三角形面积之和约等于大三角形面积，则点在内部。
+        // 或者，更简单的是检查点是否始终位于三角形三条边的同一侧（通过叉积符号）。
+
+        // 叉乘法: (P - P0) x (P1 - P0), (P - P1) x (P2 - P1), (P - P2) x (P0 - P2)
+        // 对于2D，我们计算伪叉积 (z分量): (x1*y2 - y1*x2)
+        double val1 = (n1->x - n0->x) * (y - n0->y) - (n1->y - n0->y) * (x - n0->x);
+        double val2 = (n2->x - n1->x) * (y - n1->y) - (n2->y - n1->y) * (x - n1->x);
+        double val3 = (n0->x - n2->x) * (y - n2->y) - (n0->y - n2->y) * (x - n2->x);
+
+        bool has_neg = (val1 < -epsilon) || (val2 < -epsilon) || (val3 < -epsilon); // epsilon 用于浮点比较
+        bool has_pos = (val1 > epsilon) || (val2 > epsilon) || (val3 > epsilon);
+
+        // 如果所有叉积结果同号（或部分为0，表示在边上），则点在三角形内或边上
+        if (!(has_neg && has_pos)) {
+            return cell.id; // 找到了包含该点的单元
+        }
+    }
+    return -1; // 未找到包含该点的单元
 }
 
 void Mesh_cpp::precompute_cell_geometry_cpp() { // 预计算单元几何属性实现

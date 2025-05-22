@@ -67,6 +67,8 @@ public:
                                const std::vector<double>& cell_region_attributes); // 5个参数
 
     void precompute_geometry_and_topology(const std::vector<int>& flat_edge_data, int num_edges, int num_edge_attrs);
+    //新增点源声明
+    int find_cell_containing_point(double x, double y) const;
 
     const Node_cpp* get_node_by_id(int node_id) const;
     Node_cpp* get_node_by_id_mutable(int node_id);

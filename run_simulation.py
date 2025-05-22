@@ -226,6 +226,33 @@ def get_parameters_from_config(config_data):  # 从配置数据获取参数函�
         params['internal_flow_lines'] = valid_flow_lines # 用验证后的列表更新params中的'internal_flow_lines'
     # --- 读取内部流量线定义结束 ---
 
+    # --- 新增：读取内部点源定义 ---
+    params['internal_point_sources'] = config_data.get('internal_point_sources',
+                                                       [])  # 从config_data获取internal_point_sources配置，默认为空列表
+    if not isinstance(params['internal_point_sources'], list):  # 检查获取到的是否为列表
+        print(
+            f"警告: 'internal_point_sources' 配置项不是一个列表，已忽略。实际类型: {type(params['internal_point_sources'])}")  # 打印警告
+        params['internal_point_sources'] = []  # 将其重置为空列表
+    else:  # 如果是列表
+        valid_point_sources = []  # 初始化有效点源列表
+        for ps_def in params['internal_point_sources']:  # 遍历每个点源定义
+            if isinstance(ps_def, dict) and \
+                    'name' in ps_def and \
+                    'coordinates' in ps_def and isinstance(ps_def['coordinates'], list) and len(
+                ps_def['coordinates']) == 2:  # 检查定义是否为字典且包含必要字段和类型
+                try:
+                    coords = [float(ps_def['coordinates'][0]), float(ps_def['coordinates'][1])]  # 转换坐标为浮点数
+                    ps_def['coordinates'] = coords  # 更新定义中的坐标
+                    # timeseries_column 是可选的，所以这里不做强制检查，C++端会处理
+                    valid_point_sources.append(ps_def)  # 添加到有效列表
+                except ValueError:  # 捕获转换错误
+                    print(
+                        f"警告: 内部点源 '{ps_def.get('name', '未命名')}' 的 coordinates 包含无法转换的数值，已跳过。")  # 打印警告
+            else:  # 如果格式无效
+                print(f"警告: 无效的内部点源定义格式，已跳过: {ps_def}")  # 打印警告
+        params['internal_point_sources'] = valid_point_sources  # 更新为有效列表
+    # --- 读取内部点源定义结束 ---
+
     return params  # 返回参数字典
 
 
@@ -856,6 +883,56 @@ if __name__ == "__main__":  # 主程序入口
         print("Python: No internal_flow_lines configured.")
     # ******** 内部流量源项设置结束 ********
 
+    # ******** 新增：内部点源设置 ********
+    internal_point_source_config_list_py = params.get('internal_point_sources', [])  # 获取点源配置列表
+    if internal_point_source_config_list_py:  # 如果存在点源配置
+        print(
+            f"Python: Processing {len(internal_point_source_config_list_py)} internal point source definitions...")  # 打印处理信息
+        for ps_def in internal_point_source_config_list_py:  # 遍历每个点源定义
+            ps_name = ps_def.get('name')  # 获取点源名称
+            coordinates = ps_def.get('coordinates')  # 获取点源坐标
+            timeseries_col_name = ps_def.get('timeseries_column')  # 获取时程列名 (可选)
+
+            if not ps_name or not coordinates:  # 如果名称或坐标缺失
+                print(f"  Skipping incomplete internal_point_source definition: {ps_def}")  # 打印跳过信息
+                continue  # 继续下一个定义
+
+            q_ps_timeseries_for_cpp = []  # 初始化点源流量时程列表
+            if timeseries_col_name and df_ts_all is not None and timeseries_col_name in df_ts_all.columns:  # 如果配置了列名且CSV已加载且列存在
+                time_col_from_csv_ps = df_ts_all['time'].values  # 获取时间列
+                q_values_from_csv_ps = df_ts_all[timeseries_col_name].values  # 获取流量列
+                for t_val, q_val in zip(time_col_from_csv_ps, q_values_from_csv_ps):  # 遍历时程数据
+                    if pd.notna(t_val) and pd.notna(q_val):  # 如果时间和流量值都有效
+                        ts_point = hydro_model_cpp.TimeseriesPoint_cpp(float(t_val), float(q_val))  # 创建C++时程点对象
+                        q_ps_timeseries_for_cpp.append(ts_point)  # 添加到列表
+
+                if not q_ps_timeseries_for_cpp:  # 如果没有有效的时程点
+                    print(
+                        f"  Warning: No valid (non-NaN) data points found for timeseries column '{timeseries_col_name}' for point source '{ps_name}'. Source will effectively be Q=0.")  # 打印警告
+            elif timeseries_col_name:  # 如果配置了列名但上述条件不满足
+                if df_ts_all is None:  # 如果CSV未加载
+                    print(
+                        f"  Warning: Main timeseries CSV not loaded. Cannot get timeseries for point source '{ps_name}' using column '{timeseries_col_name}'. Source will effectively be Q=0.")  # 打印警告
+                else:  # CSV已加载但列不存在
+                    print(
+                        f"  Warning: Timeseries column '{timeseries_col_name}' for point source '{ps_name}' not found in {params['boundary_timeseries_file']}. Source will effectively be Q=0.")  # 打印警告
+            else:  # 如果没有配置时程列名
+                print(
+                    f"  Info: No 'timeseries_column' specified for point source '{ps_name}'. Source will be Q=0 unless C++ has a default.")  # 打印信息
+
+            # 调用C++方法设置点源
+            # 假设 model_core 有一个名为 setup_internal_point_source 的方法
+            # 它接收: name (string), coordinates (list/array of 2 floats), q_timeseries (vector of TimeseriesPoint_cpp)
+            print(
+                f"  Python: Calling C++ setup_internal_point_source for '{ps_name}' at coords {coordinates} with {len(q_ps_timeseries_for_cpp)} timeseries points.")  # 打印调用信息
+            model_core.setup_internal_point_source_cpp(  # 调用C++方法
+                ps_name,
+                coordinates,  # 传递 Python 列表 [x, y]
+                q_ps_timeseries_for_cpp
+            )
+    else:  # 如果没有点源配置
+        print("Python: No internal_point_sources configured.")  # 打印信息
+    # ******** 内部点源设置结束 ********
 
     # --- 定义剖面线并获取相关单元 (从配置中读取) ---
     profile_lines_definitions_from_config = params.get('profile_output_lines', [])  # 从参数字典获取剖面线定义
