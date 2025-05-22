@@ -32,7 +32,7 @@ meshio_test_output/
 tests/
 hydro_model_pkg.egg-info/
 算例/
-_skbuild/
+_skbuild
 src_cpp/cmake-build-debug/
 
 # Virtual environments

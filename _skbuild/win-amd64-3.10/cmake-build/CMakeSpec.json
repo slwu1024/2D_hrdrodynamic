@@ -1,1 +1,0 @@
-{"args": ["D:\\Apps\\python310\\Lib\\site-packages\\cmake\\data\\bin/cmake.exe", "-DCMAKE_VERBOSE_MAKEFILE:BOOL=ON", "-DCMAKE_BUILD_TYPE:STRING=Release"], "version": "4.0.2", "environment": {"PYTHONNOUSERSITE": null, "PYTHONPATH": null}}

@@ -1,8 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"E:/Python project/2D_hrdrodynamic/_skbuild/win-amd64-3.10/cmake-build/cmake_install.cmake",
-		"E:/Python project/2D_hrdrodynamic/_skbuild/win-amd64-3.10/cmake-build/extern/pybind11/cmake_install.cmake"
-	],
-	"Parallel" : false
-}
