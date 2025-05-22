@@ -19,8 +19,8 @@ namespace HydroCore { // 定义HydroCore命名空间
 // 定义边界类型枚举 (与Python版本对应)
 enum class BoundaryType_cpp { // 定义边界类型枚举
     WALL,                     // 墙体边界
-    WATERLEVEL_TIMESERIES,    // 水位时间序列边界
-    TOTAL_DISCHARGE_TIMESERIES, // 总流量时间序列边界
+    WATERLEVEL,    // 水位时间序列边界
+    TOTAL_DISCHARGE, // 总流量时间序列边界
     FREE_OUTFLOW,             // 自由出流边界
     UNDEFINED                 // 未定义或默认 (可能也视为墙体)
 }; // 结束枚举定义
@@ -28,10 +28,10 @@ enum class BoundaryType_cpp { // 定义边界类型枚举
 // 存储单个边界标记的配置
 struct BoundaryDefinition_cpp { // 定义边界定义结构体
     BoundaryType_cpp type = BoundaryType_cpp::WALL; // 边界类型，默认为墙体
-    // 可以添加其他特定于类型的参数，例如：
-    // double constant_water_level; // 对于固定水位边界
-    // double constant_discharge_per_unit_width; // 对于固定单宽流量边界
-    // int timeseries_id; // 如果多个标记共享一个时间序列，或者时间序列数据按ID组织
+    // 新增：流量方向提示 (可选)
+    bool has_flow_direction_hint = false;         // 是否有流量方向提示
+    double flow_direction_hint_x = 0.0;           // x方向分量
+    double flow_direction_hint_y = 0.0;           // y方向分量
 }; // 结束结构体定义
 
 // 时间序列数据点
@@ -105,7 +105,8 @@ private: // 私有成员
         const PrimitiveVars_cpp& W_L_reconstructed_iface, // 参数3: 重构后的左侧界面原始变量
         const HalfEdge_cpp& he,                           // 参数4: 边界半边
         double target_Q_total,                            // 参数5: 目标总流量
-        int marker                                        // 参数6: 当前边界标记 (用于查找总长度等)
+        int original_segment_id_for_length, // 参数名与之前一致
+        const BoundaryDefinition_cpp& bc_def_for_hint // 新增参数
     ) const; // const成员函数
     // 预处理边界边，计算每个标记的总长度等 (如果需要)
     void preprocess_boundaries(); // 预处理边界 (可选，如果流量分配需要)

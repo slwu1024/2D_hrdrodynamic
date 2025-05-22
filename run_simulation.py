@@ -199,7 +199,36 @@ def get_parameters_from_config(config_data):  # 从配置数据获取参数函�
     elif raw_profile_lines is not None:  # 如果配置了但不是列表
         print(f"警告: 'profile_output_lines' 配置项不是一个列表，已忽略。实际类型: {type(raw_profile_lines)}")  # 打印警告
 
+    # --- (在这里添加或修改) 读取内部流量线定义 ---
+    params['internal_flow_lines'] = config_data.get('internal_flow_lines', []) # 从config_data中获取'internal_flow_lines'，如果不存在则返回空列表
+    if not isinstance(params['internal_flow_lines'], list): # 检查获取到的是否为列表
+        print(f"警告: 'internal_flow_lines' 配置项不是一个列表，已忽略。实际类型: {type(params['internal_flow_lines'])}") # 如果不是列表，打印警告
+        params['internal_flow_lines'] = [] # 将其重置为空列表
+    else: # 如果是列表
+        valid_flow_lines = [] # 初始化一个用于存储有效流量线定义的列表
+        for line_def in params['internal_flow_lines']: # 遍历从配置文件中读取的每个流量线定义
+            if isinstance(line_def, dict) and \
+               'name' in line_def and \
+               'poly_node_ids' in line_def and isinstance(line_def['poly_node_ids'], list) and \
+               'direction' in line_def and isinstance(line_def['direction'], list) and len(line_def['direction']) == 2: # 检查定义是否为字典，且包含必要的键和正确的数据类型
+                try:
+                    # 确保 poly_node_ids 是整数列表
+                    poly_ids_int = [int(pid) for pid in line_def['poly_node_ids']] # 将poly_node_ids中的每个元素转换为整数
+                    # 确保 direction 是浮点数列表
+                    direction_float = [float(d_val) for d_val in line_def['direction']] # 将direction中的每个元素转换为浮点数
+                    line_def['poly_node_ids'] = poly_ids_int # 更新line_def中的poly_node_ids
+                    line_def['direction'] = direction_float # 更新line_def中的direction
+                    valid_flow_lines.append(line_def) # 将验证和转换后的流量线定义添加到有效列表中
+                except ValueError: # 如果在转换过程中发生值错误 (例如，无法将字符串转换为整数或浮点数)
+                    print(f"警告: 内部流量线 '{line_def.get('name', '未命名')}' 的 poly_node_ids 或 direction 包含无法转换的数值，已跳过。") # 打印警告
+            else: # 如果流量线定义的格式无效
+                print(f"警告: 无效的内部流量线定义格式，已跳过: {line_def}") # 打印警告
+        params['internal_flow_lines'] = valid_flow_lines # 用验证后的列表更新params中的'internal_flow_lines'
+    # --- 读取内部流量线定义结束 ---
+
     return params  # 返回参数字典
+
+
 
 
 def load_manning_values_from_file(manning_filepath, num_cells_expected, default_manning_val):  # 从文件加载曼宁值函数
@@ -225,298 +254,293 @@ def load_manning_values_from_file(manning_filepath, num_cells_expected, default_
     return np.full(num_cells_expected, default_manning_val, dtype=float).tolist()  # 返回填充数组
 
 
-def prepare_initial_conditions(params, num_cells_cpp, mesh_cpp_ptr_for_ic):
-    ic_conf = params.get('initial_conditions', {})
-    print(f"DEBUG_PREPARE_IC: ic_conf loaded = {ic_conf}")
-    print(
-        f"DEBUG_PREPARE_IC: initial_condition_type from ic_conf.get = {ic_conf.get('type', 'DEFAULT_TYPE_NOT_FOUND_IN_IC_CONF')}")
+def prepare_initial_conditions(params, num_cells_cpp, mesh_cpp_ptr_for_ic,
+                               parsed_poly_data=None):  # parsed_poly_data可能不再直接需要，除非某些IC类型仍依赖它
+    ic_conf_main = params.get('initial_conditions', {})
+    print(f"DEBUG_PREPARE_IC: Top-level ic_conf loaded = {ic_conf_main}")
+
+    global_default_hu = float(ic_conf_main.get('hu', 0.0))
+    global_default_hv = float(ic_conf_main.get('hv', 0.0))
 
     h_initial = np.zeros(num_cells_cpp, dtype=float)
-    default_hu = params.get('initial_hu', 0.0)
-    default_hv = params.get('initial_hv', 0.0)
-    hu_initial_val = float(ic_conf.get('hu', default_hu))
-    hv_initial_val = float(ic_conf.get('hv', default_hv))
-    initial_condition_type = ic_conf.get('type', 'uniform_elevation')
+    hu_initial_np = np.full(num_cells_cpp, global_default_hu, dtype=float)
+    hv_initial_np = np.full(num_cells_cpp, global_default_hv, dtype=float)
 
-    if initial_condition_type == 'dam_break_custom':
-        dam_pos_x = float(ic_conf.get('dam_position_x', 0.0))
+    print("  应用初始条件 (基于单元区域属性和配置规则)...")
 
-        # --- 处理上游 ---
-        upstream_type = ic_conf.get('upstream_setting_type', 'elevation').lower()
-        upstream_value = float(ic_conf.get('upstream_setting_value', 0.0))
+    rules_list = ic_conf_main.get('rules', [])
+    final_default_rule = ic_conf_main.get('default_if_no_match',
+                                          {'type': 'uniform_depth', 'setting_value': 0.0,
+                                           'hu': global_default_hu, 'hv': global_default_hv})
 
-        # 为上游单元计算实际水深时可能用到的变量
-        upstream_target_eta_for_calc = 0.0  # 如果是基于elevation
-        upstream_direct_depth_for_calc = 0.0  # 如果是直接基于depth
-        apply_direct_depth_upstream = False
-
-        if upstream_type == 'elevation':
-            upstream_target_eta_for_calc = upstream_value
-            print(f"  上游设置 (高程): 目标水面高程 = {upstream_target_eta_for_calc:.3f} m")
-        elif upstream_type == 'depth':
-            # 如果用户希望用"depth"类型来定义一个平水面，他们仍需提供参考底高程
-            if 'upstream_reference_bed_elevation' in ic_conf:
-                ref_bed_elev = float(ic_conf.get('upstream_reference_bed_elevation', 0.0))
-                upstream_target_eta_for_calc = ref_bed_elev + upstream_value  # 水深值 + 参考底高程 = 目标水位
-                print(
-                    f"  上游设置 (水深带参考点): 参考点底高程={ref_bed_elev:.3f}m 处水深={upstream_value:.3f}m => 计算目标水面高程={upstream_target_eta_for_calc:.3f}m")
-            else:
-                # 如果没有参考底高程，则认为 "depth" 是直接指定每个上游单元的水深
-                upstream_direct_depth_for_calc = upstream_value
-                apply_direct_depth_upstream = True
-                print(f"  上游设置 (直接水深): 所有上游单元水深 = {upstream_direct_depth_for_calc:.3f} m")
-        else:
-            print(f"警告: 未知的上游设置类型 '{upstream_type}'。将使用默认水位0。")
-            upstream_target_eta_for_calc = 0.0  # 默认水位为0
-
-        # --- 处理下游 (保持之前的逻辑，下游 "depth" 通常是直接水深) ---
-        downstream_type = ic_conf.get('downstream_setting_type', 'depth').lower()
-        downstream_value = float(ic_conf.get('downstream_setting_value', 0.0))
-
-        downstream_direct_depth_for_calc = 0.0
-        downstream_target_eta_for_calc = 0.0
-        apply_direct_depth_downstream = False
-
-        if downstream_type == 'elevation':
-            downstream_target_eta_for_calc = downstream_value
-            print(f"  下游设置 (高程): 目标水面高程 = {downstream_target_eta_for_calc:.3f} m")
-        elif downstream_type == 'depth':
-            if 'downstream_reference_bed_elevation' in ic_conf:  # 如果也为下游提供了参考点
-                ref_bed_elev_down = float(ic_conf.get('downstream_reference_bed_elevation', 0.0))
-                downstream_target_eta_for_calc = ref_bed_elev_down + downstream_value
-                print(
-                    f"  下游设置 (水深带参考点): 参考点底高程={ref_bed_elev_down:.3f}m 处水深={downstream_value:.3f}m => 计算目标水面高程={downstream_target_eta_for_calc:.3f}m")
-            else:  # 默认下游 "depth" 是直接水深
-                downstream_direct_depth_for_calc = downstream_value
-                apply_direct_depth_downstream = True
-                print(f"  下游设置 (直接水深): 水深值 = {downstream_direct_depth_for_calc:.3f} m")
-        else:
-            print(f"警告: 未知的下游设置类型 '{downstream_type}'。将使用默认直接水深0。")
-            downstream_direct_depth_for_calc = 0.0
-            apply_direct_depth_downstream = True
-
-        print(f"  自定义溃坝: 坝位置 x={dam_pos_x:.3f}")
-
-        for i in range(num_cells_cpp):
-            cell = mesh_cpp_ptr_for_ic.get_cell(i)
-            cell_z_bed = cell.z_bed_centroid
-
-            if cell.centroid[0] < dam_pos_x:  # 上游单元
-                if apply_direct_depth_upstream:
-                    h_initial[i] = max(0.0, upstream_direct_depth_for_calc)
-                else:  # 基于计算的eta
-                    h_initial[i] = max(0.0, upstream_target_eta_for_calc - cell_z_bed)
-            else:  # 下游单元
-                if apply_direct_depth_downstream:
-                    h_initial[i] = max(0.0, downstream_direct_depth_for_calc)
-                else:  # 基于计算的eta
-                    h_initial[i] = max(0.0, downstream_target_eta_for_calc - cell_z_bed)
-
-    elif initial_condition_type == 'uniform_elevation':
-        uniform_eta = float(ic_conf.get('setting_value', ic_conf.get('water_surface_elevation', 0.0)))  # 尝试新旧参数名
-        print(f"  统一水位设置: 水面高程 = {uniform_eta:.3f} m")
-        for i in range(num_cells_cpp):
-            cell = mesh_cpp_ptr_for_ic.get_cell(i)
-            h_initial[i] = max(0.0, uniform_eta - cell.z_bed_centroid)
-
-    elif initial_condition_type == 'uniform_depth':
-        uniform_depth_val = float(ic_conf.get('setting_value', ic_conf.get('water_depth', 0.1)))  # 尝试新旧参数名
-        h_initial.fill(max(0.0, uniform_depth_val))
-        print(f"  统一水深设置: 水深 = {uniform_depth_val:.3f} m")
-
-    elif initial_condition_type == 'custom_L_shaped_dam_break': # 新增对此特定类型的处理 # 中文注释：L型弯曲河道溃坝试验的初始条件
-        dam_pos_x = float(ic_conf.get('dam_position_x', 1.0)) # 获取坝体X坐标 (根据你的.poly文件调整) # 中文注释：获取坝体X坐标
-        reservoir_depth = float(ic_conf.get('reservoir_water_depth', 0.2)) # 获取上游水库水深 # 中文注释：获取上游水库水深
-        downstream_depth = float(ic_conf.get('downstream_water_depth', 0.0)) # 获取下游河道水深 # 中文注释：获取下游河道水深
-
-        print(f"  L型弯曲河道溃坝初始条件: 坝位置 x={dam_pos_x:.3f}, 上游水深={reservoir_depth:.3f}, 下游水深={downstream_depth:.3f}") # 中文注释：打印初始条件信息
-
-        for i in range(num_cells_cpp): # 遍历所有单元 # 中文注释：遍历所有单元
-            cell = mesh_cpp_ptr_for_ic.get_cell(i) # 获取当前单元 # 中文注释：获取当前单元
-            if cell.centroid[0] < dam_pos_x:  # 如果单元在坝体上游（水库区域） # 中文注释：判断是否为上游水库区域
-                h_initial[i] = max(0.0, reservoir_depth) # 设置为水库水深 # 中文注释：设置水库水深
-            else:  # 下游河道区域 # 中文注释：否则为下游河道区域
-                h_initial[i] = max(0.0, downstream_depth) # 设置为下游水深 # 中文注释：设置下游水深
-
-    # ... (2d_partial_dam_break logic)
-    elif initial_condition_type == '2d_partial_dam_break':
-        dam_y_start = float(ic_conf.get('dam_y_start'))
-        dam_y_end = float(ic_conf.get('dam_y_end'))
-        breach_x_start = float(ic_conf.get('breach_x_start'))
-        breach_x_end = float(ic_conf.get('breach_x_end'))
-
-        # 假设此类型总是基于水位，使用 upstream_setting_value 和 downstream_setting_value
-        # 并且假设配置文件中 upstream_setting_type 和 downstream_setting_type 都是 'elevation'
-        eta_upstream_val = float(ic_conf.get('upstream_setting_value', 0.0))
-        eta_downstream_val = float(ic_conf.get('downstream_setting_value', 0.0))
-        print(
-            f"  设置二维局部溃坝初始条件: dam_y=[{dam_y_start}-{dam_y_end}], breach_x=[{breach_x_start}-{breach_x_end}], eta_up={eta_upstream_val}, eta_down={eta_downstream_val}")
-
-        for i in range(num_cells_cpp):
-            cell = mesh_cpp_ptr_for_ic.get_cell(i)
-            cx, cy = cell.centroid[0], cell.centroid[1]
-            current_target_eta = 0.0
-            if cy >= dam_y_end:
-                current_target_eta = eta_upstream_val
-            elif cy < dam_y_start:
-                current_target_eta = eta_downstream_val
-            else:
-                if breach_x_start <= cx < breach_x_end:
-                    current_target_eta = eta_downstream_val
-                else:
-                    current_target_eta = eta_upstream_val
-            h_initial[i] = max(0.0, current_target_eta - cell.z_bed_centroid)
-    elif initial_condition_type == 'custom_lab_symmetric_dam_break':  # 新增对实验室对称溃坝的处理 # 中文注释：判断初始条件类型是否为实验室对称溃坝
-        dam_pos_x = float(ic_conf.get('dam_position_x', 1.0))  # 获取坝体x坐标 # 中文注释：获取配置文件中坝体的x坐标
-        reservoir_depth = float(ic_conf.get('reservoir_water_depth', 0.6))  # 获取水库水深 # 中文注释：获取配置文件中水库的初始水深
-        downstream_depth = float(ic_conf.get('downstream_water_depth', 0.0))  # 获取下游水深 # 中文注释：获取配置文件中下游的初始水深
-
-        print(
-            f"  实验室对称溃坝初始条件: 坝位置 x={dam_pos_x:.3f}, 上游水深={reservoir_depth:.3f}, 下游水深={downstream_depth:.3f}")  # 中文注释：打印初始条件信息
-
-        for i in range(num_cells_cpp):  # 遍历所有单元 # 中文注释：遍历所有单元以设置初始水深
-            cell = mesh_cpp_ptr_for_ic.get_cell(i)  # 获取当前单元对象 # 中文注释：获取当前单元对象
-            # 水深是直接给定的，不依赖于底高程来计算初始水面（因为是平底假设下的水深）
-            if cell.centroid[0] < dam_pos_x:  # 如果单元在坝体上游 # 中文注释：判断单元是否位于大坝上游
-                h_initial[i] = max(0.0, reservoir_depth)  # 设置为水库水深 # 中文注释：将水深设置为水库初始水深
-            else:  # 如果单元在坝体下游 # 中文注释：如果单元位于大坝下游
-                h_initial[i] = max(0.0, downstream_depth)  # 设置为下游水深 # 中文注释：将水深设置为下游初始水深
-    elif initial_condition_type == "custom_surface_function":  # 新增自定义水面函数类型
-        print("  设置自定义函数生成的初始水面条件...")  # 打印信息
-
-        surface_conf = ic_conf.get('surface_params', {})  # 获取surface_params子字典
-
-        base_eta = float(surface_conf.get('base_elevation', 0.0))  # 获取基础水面高程
-        slope_x = float(surface_conf.get('slope_x', 0.0))  # 获取x方向坡度
-        slope_y = float(surface_conf.get('slope_y', 0.0))  # 获取y方向坡度
-
-        print(f"    自定义水面参数: base_eta={base_eta:.3f}, slope_x={slope_x:.4f}, slope_y={slope_y:.4f}")  # 打印参数信息
-
-        h_initial_np = np.zeros(num_cells_cpp, dtype=float)  # 初始化水深数组
-
-        initial_hu_val = float(ic_conf.get('hu', 0.0))  # 获取初始hu值
-        initial_hv_val = float(ic_conf.get('hv', 0.0))  # 获取初始hv值
-        hu_initial_np = np.full(num_cells_cpp, initial_hu_val, dtype=float)  # 初始化hu数组
-        hv_initial_np = np.full(num_cells_cpp, initial_hv_val, dtype=float)  # 初始化hv数组
-
-        # --- 新增：创建一个数组来存储所有单元的底高程，用于后续统计 ---
-        z_bed_all_cells_np = np.zeros(num_cells_cpp, dtype=float)  # 初始化所有单元底高程数组
-
-        for i in range(num_cells_cpp):  # 遍历所有单元
-            cell = mesh_cpp_ptr_for_ic.get_cell(i)  # 获取当前单元对象
-            x_cell = cell.centroid[0]  # 获取单元形心x坐标
-            y_cell = cell.centroid[1]  # 获取单元形心y坐标
-            z_bed_cell = cell.z_bed_centroid  # 获取单元形心底高程
-            z_bed_all_cells_np[i] = z_bed_cell  # --- 新增：存储底高程 ---
-
-            eta_cell = base_eta + slope_x * x_cell + slope_y * y_cell  # 计算单元中心水面高程
-
-            current_h = eta_cell - z_bed_cell  # 计算水深
-
-            h_initial_np[i] = max(0.0, current_h)  # 确保水深非负
-
-        # 调试打印
-        min_depth_threshold_for_wet_count = params.get('min_depth', 1e-6)  # 获取用于统计湿单元的最小水深阈值
-        wet_mask = h_initial_np > min_depth_threshold_for_wet_count  # 创建湿单元掩码
-        num_wet_cells = np.count_nonzero(wet_mask)  # 计算湿单元数量
-        print(f"    计算得到 {num_wet_cells} 个初始湿润单元 (h > {min_depth_threshold_for_wet_count:.1e})。")  # 打印湿单元数量
-
-        if num_wet_cells > 0:  # 如果存在湿单元
-            # 提取湿润单元的水深和对应的底高程
-            h_wet_cells = h_initial_np[wet_mask]  # 获取湿单元的水深
-            z_bed_wet_cells = z_bed_all_cells_np[wet_mask]  # 获取湿单元的底高程
-
-            print(
-                f"    初始水深范围 (湿润单元): min_h_wet={np.min(h_wet_cells):.4f}, max_h_wet={np.max(h_wet_cells):.4f}")  # 打印湿单元水深范围
-
-            # 计算湿润单元的水面高程 eta = z_bed + h
-            eta_wet_cells = z_bed_wet_cells + h_wet_cells  # 计算湿单元水面高程
-            print(
-                f"    对应水面高程范围 (湿润单元，基于形心): min_eta_wet≈{np.min(eta_wet_cells):.4f}, max_eta_wet≈{np.max(eta_wet_cells):.4f}")  # 打印湿单元水面高程范围
-        else:  # 如果不存在湿单元
-            print("    没有计算得到初始湿润单元。")  # 打印信息
-
-        return np.column_stack((h_initial_np, hu_initial_np, hv_initial_np))  # 返回组合后的初始条件数组
+    if not rules_list:
+        print("    警告: 'initial_conditions.rules' 列表为空或未定义。所有单元将使用 'default_if_no_match'。")
     else:
-        print(f"警告: 未知的初始条件类型 '{initial_condition_type}'。使用默认零水深。")
+        for i, rule in enumerate(rules_list):
+            print(
+                f"    已定义规则 {i}: 属性={rule.get('region_poly_attribute')}, 类型='{rule.get('type')}', 参数={ {k: v for k, v in rule.items() if k not in ['region_poly_attribute', 'type']} }")
 
-    hu_initial_np = np.full(num_cells_cpp, hu_initial_val, dtype=float)
-    hv_initial_np = np.full(num_cells_cpp, hv_initial_val, dtype=float)
+    print(
+        f"    最终默认设置 (若无规则匹配): 类型='{final_default_rule['type']}', 值/参数='{ {k: v for k, v in final_default_rule.items() if k != 'type'} }'")
+
+    for i in range(num_cells_cpp):
+        cell = mesh_cpp_ptr_for_ic.get_cell(i)  # 假设返回一个可访问成员的对象
+        cell_attr = mesh_cpp_ptr_for_ic.get_cell_region_attribute(i)
+
+        applied_rule = None
+        for rule in rules_list:
+            rule_attr = rule.get('region_poly_attribute')
+            if rule_attr is not None and abs(cell_attr - float(rule_attr)) < 1e-3:
+                applied_rule = rule
+                break
+
+        if applied_rule is None:
+            applied_rule = final_default_rule
+
+        # --- 从 applied_rule 中提取参数 ---
+        # 注意: 每个类型可能需要不同的参数，这里只是示例
+        # 优先从 applied_rule 获取 hu, hv，如果规则中没有，则使用全局默认
+        current_hu = float(applied_rule.get('hu', global_default_hu))
+        current_hv = float(applied_rule.get('hv', global_default_hv))
+
+        ic_type_from_rule = applied_rule.get('type')
+        # print(f"DEBUG_PREPARE_IC: Cell {i}, Attr {cell_attr}, RuleType '{ic_type_from_rule}'") # 详细调试
+
+        h_val_cell = 0.0  # 在每个类型内部计算
+
+        # --- 在这里嵌入您所有的初始条件类型判断逻辑 ---
+        # --- 您需要将 applied_rule 作为这些逻辑的参数来源 ---
+
+        if ic_type_from_rule == 'uniform_elevation':
+            setting_value = applied_rule.get('setting_value')
+            if setting_value is not None:
+                wse = float(setting_value)
+                h_val_cell = max(0.0, wse - cell.z_bed_centroid)
+            else:
+                print(f"警告: 单元 {i} 规则类型 'uniform_elevation' 缺少 'setting_value'。应用最终默认。")
+                # 应用最终默认的水深计算逻辑
+                if final_default_rule.get('type') == 'uniform_depth':
+                    h_val_cell = max(0.0, float(final_default_rule.get('setting_value', 0.0)))
+                # (可以添加更多对final_default_rule类型的处理)
+
+
+        elif ic_type_from_rule == 'uniform_depth':
+            setting_value = applied_rule.get('setting_value')
+            if setting_value is not None:
+                depth = float(setting_value)
+                h_val_cell = max(0.0, depth)
+            else:
+                print(f"警告: 单元 {i} 规则类型 'uniform_depth' 缺少 'setting_value'。应用最终默认。")
+                if final_default_rule.get('type') == 'uniform_depth':
+                    h_val_cell = max(0.0, float(final_default_rule.get('setting_value', 0.0)))
+
+
+        elif ic_type_from_rule == 'linear_wse_slope':
+            try:
+                up_wse = float(applied_rule.get('upstream_wse'))
+                down_wse = float(applied_rule.get('downstream_wse'))
+                start_coord_val = float(applied_rule.get('river_start_coord'))
+                end_coord_val = float(applied_rule.get('river_end_coord'))
+                axis_str = applied_rule.get('coord_axis_for_slope', 'x')
+                axis_idx = 0 if axis_str == 'x' else 1
+
+                total_len_coord = end_coord_val - start_coord_val
+                if abs(total_len_coord) < 1e-6:
+                    target_wse = (up_wse + down_wse) / 2.0
+                else:
+                    current_coord_val = cell.centroid[axis_idx]
+                    ratio = (current_coord_val - start_coord_val) / total_len_coord
+                    if ratio < 0:
+                        target_wse = up_wse
+                    elif ratio > 1:
+                        target_wse = down_wse
+                    else:
+                        target_wse = up_wse + ratio * (down_wse - up_wse)
+                h_val_cell = max(0.0, target_wse - cell.z_bed_centroid)
+            except Exception as e:
+                print(f"警告: 单元 {i} 规则类型 'linear_wse_slope' 参数配置错误: {e}。应用最终默认。")
+                if final_default_rule.get('type') == 'uniform_depth':
+                    h_val_cell = max(0.0, float(final_default_rule.get('setting_value', 0.0)))
+
+
+        elif ic_type_from_rule == 'dam_break_custom':
+            # 从 applied_rule 获取参数
+            dam_pos_x = float(applied_rule.get('dam_position_x', 0.0))
+            upstream_type = applied_rule.get('upstream_setting_type', 'elevation').lower()
+            upstream_value = float(applied_rule.get('upstream_setting_value', 0.0))
+            # ... (获取所有 dam_break_custom 需要的参数，如 upstream_reference_bed_elevation 等)
+            # ... (然后是您已有的计算 h_val_cell 的逻辑)
+            # (为简洁，这里省略了完整的 dam_break_custom 内部计算逻辑，您需要从原函数复制并调整参数来源)
+            # 例如:
+            apply_direct_depth_upstream = False
+            upstream_target_eta_for_calc = 0.0
+            upstream_direct_depth_for_calc = 0.0
+            if upstream_type == 'elevation':
+                upstream_target_eta_for_calc = upstream_value
+            elif upstream_type == 'depth':
+                if 'upstream_reference_bed_elevation' in applied_rule:
+                    upstream_target_eta_for_calc = float(
+                        applied_rule.get('upstream_reference_bed_elevation')) + upstream_value
+                else:
+                    upstream_direct_depth_for_calc = upstream_value
+                    apply_direct_depth_upstream = True
+            # ... (类似地处理下游 downstream_... ) ...
+            downstream_type = applied_rule.get('downstream_setting_type', 'depth').lower()
+            downstream_value = float(applied_rule.get('downstream_setting_value', 0.0))
+            apply_direct_depth_downstream = False
+            downstream_target_eta_for_calc = 0.0
+            downstream_direct_depth_for_calc = 0.0
+            if downstream_type == 'elevation':
+                downstream_target_eta_for_calc = downstream_value
+            elif downstream_type == 'depth':
+                if 'downstream_reference_bed_elevation' in applied_rule:
+                    downstream_target_eta_for_calc = float(
+                        applied_rule.get('downstream_reference_bed_elevation')) + downstream_value
+                else:
+                    downstream_direct_depth_for_calc = downstream_value
+                    apply_direct_depth_downstream = True
+
+            if cell.centroid[0] < dam_pos_x:  # 上游
+                if apply_direct_depth_upstream:
+                    h_val_cell = max(0.0, upstream_direct_depth_for_calc)
+                else:
+                    h_val_cell = max(0.0, upstream_target_eta_for_calc - cell.z_bed_centroid)
+            else:  # 下游
+                if apply_direct_depth_downstream:
+                    h_val_cell = max(0.0, downstream_direct_depth_for_calc)
+                else:
+                    h_val_cell = max(0.0, downstream_target_eta_for_calc - cell.z_bed_centroid)
+
+
+        # --- 在此 elif 块中添加您其他的 initial_condition_type ---
+        # 例如: 'custom_L_shaped_dam_break', '2d_partial_dam_break', 等等
+        # 确保每个类型的逻辑都从 applied_rule 中获取其参数
+
+        elif ic_type_from_rule == 'custom_surface_function':
+            surface_params = applied_rule.get('surface_params', {})
+            base_eta = float(surface_params.get('base_elevation', 0.0))
+            slope_x = float(surface_params.get('slope_x', 0.0))
+            slope_y = float(surface_params.get('slope_y', 0.0))
+            eta_cell = base_eta + slope_x * cell.centroid[0] + slope_y * cell.centroid[1]
+            h_val_cell = max(0.0, eta_cell - cell.z_bed_centroid)
+
+        else:  # 如果类型未被以上任何 if/elif 处理
+            print(f"警告: 单元 {i} (属性 {cell_attr:.1f}) 的规则类型 '{ic_type_from_rule}' 未被实现。应用最终默认。")
+            # 应用最终默认的水深计算逻辑
+            if final_default_rule.get('type') == 'uniform_depth':
+                h_val_cell = max(0.0, float(final_default_rule.get('setting_value', 0.0)))
+            elif final_default_rule.get('type') == 'uniform_elevation':
+                h_val_cell = max(0.0, float(final_default_rule.get('setting_value', 0.0)) - cell.z_bed_centroid)
+            # ... (可以添加更多对final_default_rule类型的处理)
+            else:
+                h_val_cell = 0.0  # 绝对后备
+
+        h_initial[i] = h_val_cell
+        hu_initial_np[i] = current_hu  # 使用从规则或全局默认获取的hu
+        hv_initial_np[i] = current_hv  # 使用从规则或全局默认获取的hv
+
+    num_dry_cells = np.sum(h_initial < params.get('min_depth', 1e-6))  # min_depth 可能更合适
+    print(f"  初始条件设置完毕。基于规则，计算得到 {num_dry_cells} / {num_cells_cpp} 个干单元或水深极浅单元。")
+
     return np.column_stack((h_initial, hu_initial_np, hv_initial_np))
 
 
-def prepare_boundary_conditions_for_cpp(params):  # 准备C++边界条件函数
-    """转换Python边界配置为C++期望的格式。"""
-    bc_defs_cpp = {}  # 初始化C++边界定义字典
-    # 1. 解析 boundary_definitions_py (这部分不变，因为它是 边界类型标记 -> C++边界类型枚举)
-    for marker_str, py_def in params.get('boundary_definitions_py', {}).items():  # 遍历Python边界定义
-        try:  # 尝试
-            marker_int = int(marker_str)  # 转换标记为整数
-            cpp_def = hydro_model_cpp.BoundaryDefinition_cpp()  # 创建C++边界定义对象
-            type_str = py_def.get('type', 'WALL').upper()  # 获取类型字符串
-            cpp_def.type = getattr(hydro_model_cpp.BoundaryType_cpp, type_str,  # 设置C++边界类型
-                                   hydro_model_cpp.BoundaryType_cpp.WALL)
-            bc_defs_cpp[marker_int] = cpp_def  # 添加到字典，键是边界类型标记
-        except ValueError:  # 捕获值错误
-            print(f"警告: 边界定义标记 '{marker_str}' 不是有效整数，已跳过。")  # 打印警告
-        except AttributeError:  # 捕获属性错误
-            type_str_for_error = py_def.get('type', 'UNKNOWN').upper()  # 获取用于错误信息的类型字符串
-            print(f"警告: 边界类型 '{type_str_for_error}' (标记 {marker_str}) 无效，已设为WALL。")  # 打印警告
-            cpp_def_fallback = hydro_model_cpp.BoundaryDefinition_cpp()  # 创建备用C++边界定义对象
-            cpp_def_fallback.type = hydro_model_cpp.BoundaryType_cpp.WALL  # 设为墙体
-            if marker_str.isdigit():  # 确保marker_str可以转为int
-                bc_defs_cpp[int(marker_str)] = cpp_def_fallback  # 添加到字典
-            else:  # marker_str无法转为int
-                print(f"错误: 边界标记 '{marker_str}' 无法转换为整数，已忽略此回退定义。")  # 打印错误
+def prepare_boundary_conditions_for_cpp(params):
+    # ... (调试打印 hydro_model_cpp.BoundaryType_cpp 成员的代码可以保留或删除) ...
 
-    wl_ts_data_cpp = {}  # 初始化水位时间序列数据字典 (键将是 线段ID)
-    discharge_ts_data_cpp = {}  # 初始化流量时间序列数据字典 (键将是 线段ID)
+    bc_defs_cpp = {}
+    py_def_dict_top = params.get('boundary_definitions_py', {})
 
-    unified_ts_file_path = params.get('boundary_timeseries_file')  # 获取统一的时间序列文件路径
+    for marker_str, py_def_item in py_def_dict_top.items():
+        try:
+            marker_int = int(marker_str)
+            cpp_def = hydro_model_cpp.BoundaryDefinition_cpp()
 
-    if unified_ts_file_path and os.path.exists(unified_ts_file_path):  # 如果文件路径有效且存在
-        print(f"  正在从统一边界时间序列文件 '{unified_ts_file_path}' 加载数据 (基于线段ID)...")  # 打印加载信息
-        try:  # 尝试读取和解析
-            df_ts = pd.read_csv(unified_ts_file_path)  # 读取CSV文件
-            if 'time' not in df_ts.columns:  # 检查是否有时间列
-                print(f"警告: 统一边界时间序列文件 '{unified_ts_file_path}' 缺少 'time' 列。")  # 打印警告
-            else:  # 如果有时间列
-                time_col = df_ts['time'].values  # 获取时间列数据
+            # 获取原始字符串
+            type_str_raw = py_def_item.get('type', 'WALL')
 
-                for col_name in df_ts.columns:  # 遍历所有列名
-                    if col_name.lower() == 'time':  # 跳过时间列本身
-                        continue  # 继续下一列
+            # ***** 关键修复：显式转换为 str 类型 *****
+            type_str_from_config = str(type_str_raw)
 
-                    match = re.fullmatch(r"b(\d+)_(elev|flux)", col_name, re.IGNORECASE)  # 进行正则匹配
+            print(
+                f"DEBUG_BC_PREP: Marker {marker_str}, Type from config (raw): '{type_str_raw}' (type: {type(type_str_raw)}), Converted to str: '{type_str_from_config}' (type: {type(type_str_from_config)})")  # 详细调试
 
-                    if match:  # 如果匹配成功
-                        segment_id = int(match.group(1))  # <--- 提取的是线段ID
-                        data_type_suffix = match.group(2).lower()  # 提取类型后缀 (elev 或 flux)
+            if type_str_from_config == "WALL":
+                cpp_def.type = hydro_model_cpp.BoundaryType_cpp.WALL
+            elif type_str_from_config == "WATERLEVEL":
+                cpp_def.type = hydro_model_cpp.BoundaryType_cpp.WATERLEVEL
+            elif type_str_from_config == "TOTAL_DISCHARGE":
+                cpp_def.type = hydro_model_cpp.BoundaryType_cpp.TOTAL_DISCHARGE
+            elif type_str_from_config == "FREE_OUTFLOW":
+                cpp_def.type = hydro_model_cpp.BoundaryType_cpp.FREE_OUTFLOW
+            else:
+                print(
+                    f"警告: 边界类型 '{type_str_from_config}' (标记 {marker_str}) 在config.yaml中无效或未在Python端处理，将设为WALL。")
+                cpp_def.type = hydro_model_cpp.BoundaryType_cpp.WALL
 
-                        ts_points = []  # 初始化时间序列点列表
-                        for t_val, data_val in zip(time_col, df_ts[col_name].values):  # 遍历时间和数据值
-                            if pd.notna(t_val) and pd.notna(data_val):  # 如果时间和数据都不是NaN
-                                pt = hydro_model_cpp.TimeseriesPoint_cpp()  # 创建C++时间序列点对象
-                                pt.time = float(t_val)  # 设置时间
-                                pt.value = float(data_val)  # 设置值
-                                ts_points.append(pt)  # 添加到列表
+            # 处理 flow_target_direction (这部分逻辑不变)
+            if 'flow_target_direction' in py_def_item:
+                direction = py_def_item['flow_target_direction']
+                if isinstance(direction, list) and len(direction) == 2:
+                    try:
+                        cpp_def.flow_direction_hint_x = float(direction[0])
+                        cpp_def.flow_direction_hint_y = float(direction[1])
+                        cpp_def.has_flow_direction_hint = True
+                    except ValueError:
+                        print(f"警告: 边界标记 {marker_int} 的 flow_target_direction 坐标无法转换为浮点数。")
+                        cpp_def.has_flow_direction_hint = False
+                else:
+                    print(f"警告: 边界标记 {marker_int} 的 flow_target_direction 格式不正确，应为 [dx, dy]。")
+                    cpp_def.has_flow_direction_hint = False
+            else:
+                cpp_def.has_flow_direction_hint = False
 
-                        if ts_points:  # 如果成功提取到时间序列点
-                            if data_type_suffix == 'elev':  # 如果数据类型是水位
-                                wl_ts_data_cpp[segment_id] = ts_points  # 使用线段ID作为键
-                                print(f"    已为线段ID {segment_id} 加载水位时间序列 (elev)。")  # 打印加载信息
-                            elif data_type_suffix == 'flux':  # 如果数据类型是流量
-                                discharge_ts_data_cpp[segment_id] = ts_points  # 使用线段ID作为键
-                                print(f"    已为线段ID {segment_id} 加载流量时间序列 (flux)。")  # 打印加载信息
-        # ... (异常捕获不变) ...
-        except ImportError:  # 捕获Pandas导入错误
-            print(f"警告: pandas 未安装，无法解析统一边界时间序列CSV文件 '{unified_ts_file_path}'。")  # 打印警告
-        except Exception as e:  # 捕获其他读取或解析错误
-            print(f"处理统一边界时间序列文件 '{unified_ts_file_path}' 时出错: {e}")  # 打印错误信息
-    elif unified_ts_file_path:  # 如果文件路径已配置但文件不存在
-        print(f"警告: 统一边界时间序列文件 '{unified_ts_file_path}' 未找到。")  # 打印警告
+            bc_defs_cpp[marker_int] = cpp_def
+        except ValueError:
+            print(f"警告: 边界定义标记 '{marker_str}' 不是有效整数，已跳过。")
 
-    return bc_defs_cpp, wl_ts_data_cpp, discharge_ts_data_cpp  # 返回准备好的C++边界条件数据
+    # ... (wl_ts_data_cpp, discharge_ts_data_cpp 的逻辑不变) ...
+    wl_ts_data_cpp = {}
+    discharge_ts_data_cpp = {}
+    unified_ts_file_path = params.get('boundary_timeseries_file')
+
+    if unified_ts_file_path and os.path.exists(unified_ts_file_path):
+        print(f"  正在从统一边界时间序列文件 '{unified_ts_file_path}' 加载数据 (基于线段ID)...")
+        try:
+            df_ts = pd.read_csv(unified_ts_file_path)
+            if 'time' not in df_ts.columns:
+                print(f"警告: 统一边界时间序列文件 '{unified_ts_file_path}' 缺少 'time' 列。")
+            else:
+                time_col = df_ts['time'].values
+                for col_name in df_ts.columns:
+                    if col_name.lower() == 'time':
+                        continue
+                    match = re.fullmatch(r"b(\d+)_(elev|flux)", col_name, re.IGNORECASE)
+                    if match:
+                        segment_id = int(match.group(1))
+                        data_type_suffix = match.group(2).lower()
+                        ts_points = []
+                        for t_val, data_val in zip(time_col, df_ts[col_name].values):
+                            if pd.notna(t_val) and pd.notna(data_val):
+                                pt = hydro_model_cpp.TimeseriesPoint_cpp()
+                                pt.time = float(t_val)
+                                pt.value = float(data_val)
+                                ts_points.append(pt)
+                        if ts_points:
+                            if data_type_suffix == 'elev':
+                                wl_ts_data_cpp[segment_id] = ts_points
+                                print(f"    已为原始线段ID {segment_id} 加载水位时间序列 (elev)。")
+                            elif data_type_suffix == 'flux':
+                                discharge_ts_data_cpp[segment_id] = ts_points
+                                print(f"    已为原始线段ID {segment_id} 加载流量时间序列 (flux)。")
+        except ImportError:
+            print(f"警告: pandas 未安装，无法解析统一边界时间序列CSV文件 '{unified_ts_file_path}'。")
+        except Exception as e:
+            print(f"处理统一边界时间序列文件 '{unified_ts_file_path}' 时出错: {e}")
+    elif unified_ts_file_path:
+        print(f"警告: 统一边界时间序列文件 '{unified_ts_file_path}' 未找到。")
+
+    return bc_defs_cpp, wl_ts_data_cpp, discharge_ts_data_cpp
 
 
 def save_results_to_vtk(vtk_filepath, points_coords, cells_connectivity, cell_data_dict):  # 保存结果到VTK文件函数
@@ -758,6 +782,79 @@ if __name__ == "__main__":  # 主程序入口
         model_core.setup_boundary_conditions_cpp(bc_defs_cpp, wl_ts_data_cpp, discharge_ts_data_cpp)  # 修改: 调用正确的C++方法名
         print("Python: 边界条件已传递给C++核心。")  # 打印边界条件传递信息
     # ******** 边界条件设置结束 ********
+
+    # ******** 内部流量源项设置 ********
+    # 从config中获取内部流量线定义 (假设你会在config中添加类似以下的结构)
+    # internal_flow_lines:
+    #   - name: "inflow_segment"
+    #     poly_node_ids: [5, 6] # .poly 文件中定义的节点 ID
+    #     direction: [1.0, 0.0]
+
+    df_ts_all = None  # 初始化为None
+    if params.get('boundary_timeseries_file') and os.path.exists(params['boundary_timeseries_file']):
+        try:
+            df_ts_all = pd.read_csv(params['boundary_timeseries_file'])
+        except Exception as e_csv_main:
+            print(
+                f"Python: CRITICAL ERROR - Could not read the main timeseries file: {params['boundary_timeseries_file']}. Error: {e_csv_main}")
+            df_ts_all = None  # 确保出错时为None
+
+    if df_ts_all is None:
+        print(
+            "Python: WARNING - Main timeseries data CSV could not be loaded. Internal flow sources requiring timeseries will not be set up or will use Q=0.")
+
+    internal_flow_config_list_py = params.get('internal_flow_lines', [])
+    if internal_flow_config_list_py:
+        print(f"Python: Processing {len(internal_flow_config_list_py)} internal flow line definitions...")
+        for flow_def in internal_flow_config_list_py:
+            line_name = flow_def.get('name')
+            poly_ids = flow_def.get('poly_node_ids')
+            direction = flow_def.get('direction')
+
+            if not all([line_name, poly_ids, direction]):
+                print(f"  Skipping incomplete internal_flow_line definition: {flow_def}")
+                continue
+
+            q_timeseries_for_cpp = []
+            if df_ts_all is not None and line_name in df_ts_all.columns:
+                time_col_from_csv = df_ts_all['time'].values
+                q_values_from_csv = df_ts_all[line_name].values
+                for t_val, q_val in zip(time_col_from_csv, q_values_from_csv):
+                    if pd.notna(t_val) and pd.notna(q_val):
+                        ts_point = hydro_model_cpp.TimeseriesPoint_cpp(float(t_val), float(q_val))
+                        q_timeseries_for_cpp.append(ts_point)
+
+                if not q_timeseries_for_cpp:
+                    print(
+                        f"  Warning: No valid (non-NaN) data points found for timeseries column '{line_name}' for internal flow line '{line_name}'. Source will effectively be Q=0.")
+            else:
+                if df_ts_all is None:
+                    print(
+                        f"  Warning: Main timeseries CSV not loaded. Cannot get timeseries for internal flow line '{line_name}'. Source will effectively be Q=0.")
+                else:
+                    print(
+                        f"  Warning: Timeseries column '{line_name}' (from internal_flow_line name) not found in {params['boundary_timeseries_file']}. Source will effectively be Q=0.")
+                # 即使找不到时程，也传递一个空vector，C++端会处理（或警告流量为0）
+
+            # 确保方向是浮点数列表/元组
+            try:
+                cpp_direction = [float(direction[0]), float(direction[1])]
+            except (TypeError, IndexError, ValueError) as e_dir:
+                print(
+                    f"  ERROR: Invalid 'direction' format for internal flow line '{line_name}': {direction}. Error: {e_dir}. Using [0,0].")
+                cpp_direction = [0.0, 0.0]
+
+            print(
+                f"  Python: Calling C++ setup_internal_flow_source for '{line_name}' with {len(q_timeseries_for_cpp)} points and direction {cpp_direction}.")
+            model_core.setup_internal_flow_source(
+                line_name,
+                poly_ids,
+                q_timeseries_for_cpp,  # 即使为空也传递
+                cpp_direction
+            )
+    else:
+        print("Python: No internal_flow_lines configured.")
+    # ******** 内部流量源项设置结束 ********
 
 
     # --- 定义剖面线并获取相关单元 (从配置中读取) ---

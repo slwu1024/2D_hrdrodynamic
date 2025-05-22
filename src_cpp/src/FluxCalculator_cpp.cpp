@@ -46,8 +46,7 @@ std::array<double, 3> FluxCalculator_cpp::calculate_hllc_flux(
     const PrimitiveVars_cpp& W_R_param, // 修改：参数名
     const std::array<double, 2>& normal_vec
 ) {
-    // ... (调试打印的 should_print_debug_local 逻辑不变) ...
-    // if (should_print_debug_local) { ... }
+
 
     PrimitiveVars_cpp W_L = W_L_param; // 拷贝一份输入参数，以便修改
     PrimitiveVars_cpp W_R = W_R_param; // 拷贝一份输入参数
@@ -73,14 +72,14 @@ std::array<double, 3> FluxCalculator_cpp::calculate_hllc_flux(
     bool dryL = (W_L.h < min_depth); // 使用 min_depth 进行严格的干判断
     bool dryR = (W_R.h < min_depth); // 使用 min_depth 进行严格的干判断
 
+
+
     if (dryL && dryR) {
         // if (should_print_debug_local) std::cout << "  HLLC: Both dry, returning zero flux." << std::endl;
         return {0.0, 0.0, 0.0};
     }
 
-    // ... HLLC 的其余逻辑（unL, utL, cL, cR, sL, sR, s_star 等计算）使用修正后的 W_L, W_R ...
-    // ... 这部分代码保持不变 ...
-    // (之前提供的HLLC完整代码)
+
     double unL, utL, unR, utR;
     double cL, cR;
 
@@ -90,7 +89,7 @@ std::array<double, 3> FluxCalculator_cpp::calculate_hllc_flux(
     unR = W_R.u * normal_vec[0] + W_R.v * normal_vec[1];
     utR = -W_R.u * normal_vec[1] + W_R.v * normal_vec[0];
 
-    // if (should_print_debug_local) { ... }
+
 
     // --- 干区处理，使用修正后的 W_L, W_R 和 dryL, dryR ---
     if (dryL) { // 左干
@@ -122,10 +121,7 @@ std::array<double, 3> FluxCalculator_cpp::calculate_hllc_flux(
         cL = std::sqrt(g * W_L.h);
         cR = std::sqrt(g * W_R.h);
     }
-    // ... HLLC后续步骤 ...
-    // ... (sL_final, sR_final, PL, PR, s_star, FL_nt, FR_nt, F_hllc_nt, F_hllc_cartesian) ...
-    // 这部分代码使用已经经过干区处理和速度修正（如果应用了）的 unL, utL, unR, utR, W_L.h, W_R.h
-    // 所以不需要再改动HLLC的这些核心计算步骤。
+
 
     // --- (此处省略之前提供的HLLC完整计算逻辑，它应该在这一系列修正之后) ---
     // 例如:
@@ -219,7 +215,6 @@ std::array<double, 3> FluxCalculator_cpp::calculate_hllc_flux(
             for(int k=0; k<3; ++k) F_hllc_nt[k] = FR_nt[k] + sR_final * (U_starR_nt[k] - UR_nt[k]);
         }
     }
-
     double Fh_n = F_hllc_nt[0];
     double Fun_n = F_hllc_nt[1];
     double Fut_n = F_hllc_nt[2];
@@ -229,7 +224,6 @@ std::array<double, 3> FluxCalculator_cpp::calculate_hllc_flux(
     F_hllc_cartesian[1] = Fun_n * normal_vec[0] - Fut_n * normal_vec[1];
     F_hllc_cartesian[2] = Fun_n * normal_vec[1] + Fut_n * normal_vec[0];
 
-    // if (should_print_debug_local) { ... } // 调试打印可以放在最后
 
     return F_hllc_cartesian;
 }

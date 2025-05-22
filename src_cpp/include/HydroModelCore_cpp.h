@@ -8,6 +8,9 @@
 #include <memory> // 包含智能指针
 #include <map>    // 包含map容器
 #include <functional> // 包含std::function
+#include <set>    // 新增：为 setup_internal_flow_source 中的 processed_physical_edges
+#include <algorithm> // 新增: 为了 std::sort, std::lower_bound
+#include <limits>    // 新增: 为了 std::numeric_limits
 
 #include "MeshData_cpp.h" // 网格数据结构
 #include "FluxCalculator_cpp.h" // 通量计算器
@@ -39,13 +42,12 @@ public: // 公有成员
         RiemannSolverType_cpp riemann_solver,
         TimeScheme_cpp time_scheme
     );
-
-    // 保留这些用于细粒度控制或测试，但 initialize_model_from_files 已包含其逻辑
-    // void set_simulation_parameters(double gravity, double min_depth, double cfl,
-    //                                double total_t, double output_dt_interval, double max_dt_val);
-    // void set_numerical_schemes(ReconstructionScheme_cpp recon_scheme,
-    //                            RiemannSolverType_cpp riemann_solver,
-    //                            TimeScheme_cpp time_scheme);
+    void setup_internal_flow_source(
+        const std::string& line_name,                         // 新增：内部流量线的唯一名称
+        const std::vector<int>& poly_node_ids_for_line_py,    // .poly文件中的1-based节点ID
+        const std::vector<TimeseriesPoint_cpp>& q_timeseries, // 该线的流量时程数据
+        const std::array<double, 2>& direction_py           // 流量方向
+    );
 
     void set_initial_conditions_cpp(const StateVector& U_initial); // 设置初始条件(C++)
     void setup_boundary_conditions_cpp( // 设置边界条件(C++)
@@ -69,7 +71,7 @@ public: // 公有成员
 
     StateVector get_U_state_all_internal_copy() const { return U_state_all_internal; } // 获取内部守恒量副本
     std::vector<double> get_eta_previous_internal_copy() const { return eta_previous_internal; } // 获取内部上一时刻水位副本
-    const Mesh_cpp* get_mesh_ptr() const { return mesh_internal_ptr.get(); } // 新增：获取网格指针 (const)
+    const Mesh_cpp* get_mesh_ptr() const { return mesh_internal_ptr.get(); } // 获取网格指针 (const)
 
 
 public: // 回调函数 (保持public或通过其他方式传递给TimeIntegrator)
@@ -79,16 +81,34 @@ public: // 回调函数 (保持public或通过其他方式传递给TimeIntegrato
 private: // 私有成员
     double _calculate_dt_internal(); // 计算CFL时间步长(内部)
     void _handle_dry_cells_and_update_eta_internal(); // 处理干单元并更新水位(内部)
-    void _initialize_manning_from_mesh_internal(); // 从网格初始化曼宁系数(内部) (现在是 internal)
+    void _initialize_manning_from_mesh_internal(); // 从网格初始化曼宁系数(内部)
+    StateVector _apply_internal_flow_source_terms(const StateVector& U_input, double dt, double time_current); // 修改：参数名与实现匹配
+
+    // 新增: 时程插值辅助函数
+    double get_timeseries_value_internal(const std::vector<TimeseriesPoint_cpp>& series, double time_current) const;
 
     std::unique_ptr<Mesh_cpp> mesh_internal_ptr; // HydroModelCore拥有Mesh对象
-
     std::unique_ptr<FluxCalculator_cpp> flux_calculator_ptr; // 通量计算器指针
     std::unique_ptr<SourceTermCalculator_cpp> source_term_calculator_ptr; // 源项计算器指针
     std::unique_ptr<Reconstruction_cpp> reconstruction_ptr; // 重构器指针
     std::unique_ptr<VFRCalculator_cpp> vfr_calculator_ptr; // VFR计算器指针
     std::unique_ptr<TimeIntegrator_cpp> time_integrator_ptr; // 时间积分器指针
     std::unique_ptr<BoundaryConditionHandler_cpp> boundary_handler_ptr; // 边界条件处理器指针
+
+    // --- 内部流量源项相关的新结构和成员变量 ---
+    struct InternalFlowEdgeInfo {       // 定义一个结构体来存储每条内部流量边的信息
+        int source_cell_id;             // 源单元的ID
+        int sink_cell_id;               // 汇单元的ID
+        const Cell_cpp* source_cell_ptr; // 指向源单元的指针 (在setup时填充)
+        const Cell_cpp* sink_cell_ptr;   // 指向汇单元的指针 (在setup时填充)
+        double edge_length;             // 这条边的长度
+    };
+    // 使用 map 来存储每条命名内部流量线的信息
+    std::map<std::string, std::vector<InternalFlowEdgeInfo>> all_internal_flow_edges_info_map_internal; // 修改: map的value是vector
+    std::map<std::string, std::vector<TimeseriesPoint_cpp>> internal_q_timeseries_data_map_internal;  // 存储流量时程
+    std::map<std::string, double> internal_flow_line_total_lengths_map_internal;                     // 存储总长度
+    std::map<std::string, std::array<double, 2>> internal_flow_directions_map_internal;              // 存储方向
+
 
     StateVector U_state_all_internal; // 内部存储的守恒量
     std::vector<double> eta_previous_internal; // 内部存储的上一时刻水位
@@ -109,8 +129,6 @@ private: // 私有成员
     RiemannSolverType_cpp current_riemann_solver; // 当前黎曼求解器
     TimeScheme_cpp current_time_scheme; // 当前时间积分方案
 
-    // bool params_initialized_flag; // 这些标记可以被一个总的 model_initialized_flag 替代
-    // bool schemes_initialized_flag;
     bool model_fully_initialized_flag; // 标记模型是否已完全初始化
     bool initial_conditions_set_flag; // 标记初始条件是否已设置
     bool boundary_conditions_set_flag; // 标记边界条件是否已设置

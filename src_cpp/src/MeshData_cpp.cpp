@@ -117,70 +117,117 @@ bool Mesh_cpp::read_node_file_cpp(const std::string& filepath_utf8, std::vector<
     return true; // 读取成功
 } // 结束函数
 
-bool Mesh_cpp::read_cell_file_cpp(const std::string& filepath_utf8, std::vector<int>& flat_data, int& num_cells_out, int& nodes_per_cell_out) { // 读取单元文件(C++) 实现
-    std::cout << "C++ received UTF-8 filepath for cell file: [" << filepath_utf8 << "]" << std::endl; // 打印接收到的UTF-8路径
-    std::ifstream file; // 声明文件输入流对象
-#ifdef _WIN32 // 如果是Windows平台
-    std::wstring w_filepath = utf8_to_wstring_windows(filepath_utf8); // 转换路径
-    if (!w_filepath.empty()) { // 如果转换成功
-        file.open(w_filepath.c_str()); // 使用宽字符路径打开
-    } else if (!filepath_utf8.empty()) { // 如果转换失败但原路径非空
-        std::cerr << "Warning: Failed to convert cell filepath to wstring, trying with original UTF-8 string." << std::endl; // 打印警告
-        file.open(filepath_utf8.c_str()); // 尝试用原始UTF-8路径打开
-    } else { // 如果原始UTF-8路径也为空
-        file.open(filepath_utf8.c_str()); // 尝试用原始UTF-8路径打开
+bool Mesh_cpp::read_cell_file_cpp(const std::string& filepath_utf8,
+                                  std::vector<int>& flat_cell_data_out,      // 输出单元节点连接
+                                  std::vector<double>& cell_attributes_out, // 输出单元区域属性
+                                  int& num_cells_out,
+                                  int& num_nodes_per_cell_out) {
+    // ... (文件打开逻辑不变) ...
+    std::ifstream file;
+    // ... (打开文件的代码，包括Windows路径转换) ...
+    #ifdef _WIN32
+    std::wstring w_filepath = utf8_to_wstring_windows(filepath_utf8);
+    if (!w_filepath.empty()) {
+        file.open(w_filepath.c_str());
+    } else if (!filepath_utf8.empty()) {
+        std::cerr << "Warning: Failed to convert cell filepath to wstring, trying with original UTF-8 string." << std::endl;
+        file.open(filepath_utf8.c_str());
+    } else {
+        file.open(filepath_utf8.c_str());
     }
-#else
-    file.open(filepath_utf8.c_str()); // 直接打开
-#endif
-    if (!file.is_open()) { // 如果文件打开失败
-        std::cerr << "Error: Could not open cell file " << filepath_utf8 << std::endl; // 打印错误信息
-        return false; // 返回失败
-    }
-    // ... (文件头部和数据行的读取逻辑保持不变，记得在出错或结束时 file.close())
-    std::string line; // 用于存储读取的每一行
-    if (!std::getline(file, line)) { std::cerr << "Error: Cell file " << filepath_utf8 << " is empty or unreadable header." << std::endl; file.close(); return false; } // 读取头部失败
-    std::istringstream header_ss(line); // 创建字符串流处理头部
-    int ele_attrs_count_file; // 声明文件中的单元属性数量
-    header_ss >> num_cells_out >> nodes_per_cell_out >> ele_attrs_count_file; // 从字符串流中提取头部信息
-    if (header_ss.fail()) { std::cerr << "Error: Invalid cell file header format in " << filepath_utf8 << std::endl; file.close(); return false; } // 提取失败
+    #else
+    file.open(filepath_utf8.c_str());
+    #endif
 
-    if (nodes_per_cell_out != 3) { // 检查每单元节点数是否为3
-        std::cerr << "Error: Cell file " << filepath_utf8 << " indicates " << nodes_per_cell_out
-                  << " nodes per cell, but C++ MeshData currently only supports 3." << std::endl; // 打印错误信息
-        file.close(); return false; // 返回失败
+    if (!file.is_open()) {
+        std::cerr << "Error: Could not open cell file " << filepath_utf8 << std::endl;
+        return false;
     }
 
-    flat_data.clear(); // 清空扁平化数据容器
-    flat_data.reserve(num_cells_out * (1 + nodes_per_cell_out)); // 预分配内存
+    std::string line;
+    if (!std::getline(file, line)) { /* ... error handling ... */ file.close(); return false; }
+    std::istringstream header_ss(line);
+    int num_cell_attrs_in_file; // 文件中声明的每个单元的属性数量
+    header_ss >> num_cells_out >> num_nodes_per_cell_out >> num_cell_attrs_in_file;
+    if (header_ss.fail()) { /* ... error handling ... */ file.close(); return false; }
 
-    for (int i = 0; i < num_cells_out; ++i) { // 遍历所有单元
-        if (!std::getline(file, line)) { // 读取单元数据行
-            std::cerr << "Error: Unexpected end of file or read error in cell file " << filepath_utf8 << " at cell " << i << std::endl; // 读取失败
-            file.close(); return false; // 关闭文件并返回失败
+    if (num_nodes_per_cell_out != 3) {
+        std::cerr << "Error: Cell file " << filepath_utf8 << " indicates " << num_nodes_per_cell_out
+                  << " nodes per cell, but C++ MeshData currently only supports 3." << std::endl;
+        file.close(); return false;
+    }
+
+    flat_cell_data_out.clear();
+    flat_cell_data_out.reserve(num_cells_out * (1 + num_nodes_per_cell_out));
+    cell_attributes_out.clear();
+    cell_attributes_out.reserve(num_cells_out);
+
+    for (int i = 0; i < num_cells_out; ++i) {
+        if (!std::getline(file, line)) { /* ... error handling ... */ file.close(); return false; }
+        std::istringstream line_ss(line);
+        std::vector<std::string> parts;
+        std::string part;
+        while(line_ss >> part) {
+            parts.push_back(part);
         }
-        std::istringstream line_ss(line); // 创建字符串流处理当前行
-        int ele_id; // 声明单元ID
-        line_ss >> ele_id; // 提取单元ID
-        flat_data.push_back(ele_id); // 添加单元ID
-        for (int j = 0; j < nodes_per_cell_out; ++j) { // 遍历单元的节点
-            int node_idx; // 声明节点索引
-            line_ss >> node_idx; // 提取节点索引
-            flat_data.push_back(node_idx); // 添加节点索引
+
+        if (parts.size() < static_cast<size_t>(1 + num_nodes_per_cell_out)) {
+             std::cerr << "Error: Invalid data format for cell " << i << " in " << filepath_utf8 << ". Not enough parts. Line: "<< line << std::endl;
+             file.close(); return false;
         }
-        for(int attr_idx = 0; attr_idx < ele_attrs_count_file; ++attr_idx) { // 遍历额外属性
-            int dummy_attr; // 声明临时变量
-            if (!(line_ss >> dummy_attr)) { // 尝试读取
+
+        int ele_id = std::stoi(parts[0]);
+        flat_cell_data_out.push_back(ele_id);
+        for (int j = 0; j < num_nodes_per_cell_out; ++j) {
+            flat_cell_data_out.push_back(std::stoi(parts[1 + j]));
+        }
+
+        // 提取区域属性
+        if (num_cell_attrs_in_file > 0) {
+            if (parts.size() > static_cast<size_t>(num_nodes_per_cell_out + 1)) {
+                try {
+                    cell_attributes_out.push_back(std::stod(parts[num_nodes_per_cell_out + 1]));
+                } catch (const std::invalid_argument& ia) {
+                    std::cerr << "Warning: Invalid attribute for cell " << ele_id << " ('" << parts[num_nodes_per_cell_out + 1] << "'). Using 0.0. Error: " << ia.what() << std::endl;
+                    cell_attributes_out.push_back(0.0);
+                } catch (const std::out_of_range& oor) {
+                     std::cerr << "Warning: Attribute for cell " << ele_id << " out of range. Using 0.0. Error: " << oor.what() << std::endl;
+                    cell_attributes_out.push_back(0.0);
+                }
+            } else {
+                // std::cerr << "Warning: Cell " << ele_id << " in " << filepath_utf8
+                //           << " declared attributes but line parts are insufficient. Using 0.0 for region attribute." << std::endl;
+                cell_attributes_out.push_back(0.0); // 默认值
             }
-        }
-        if (line_ss.fail() && !line_ss.eof()) { // 如果提取过程中发生错误
-            std::cerr << "Error: Invalid data format for cell " << i << " in " << filepath_utf8 << ". Line: "<< line << std::endl; // 打印错误信息
-            file.close(); return false; // 关闭文件并返回失败
+        } else {
+            cell_attributes_out.push_back(0.0); // 文件未声明属性，使用默认值
         }
     }
-    file.close(); // 关闭文件
-    return true; // 读取成功
-} // 结束函数
+    file.close();
+    return true;
+}
+
+// 新增 get_cell_region_attribute 成员函数的定义
+double Mesh_cpp::get_cell_region_attribute(int cell_id) const {
+    // 调用本类的 get_cell_by_id (可以是 this->get_cell_by_id 或者直接 get_cell_by_id)
+    const Cell_cpp* cell = this->get_cell_by_id(cell_id);
+    if (cell) {
+        return cell->region_attribute;
+    }
+
+    // 处理找不到单元的情况 (选择一种)
+
+    // 选项 A: 返回默认值并打印警告 (不推荐在核心库函数中直接打印到cerr，除非用于临时调试)
+    // std::cerr << "Warning (Mesh_cpp::get_cell_region_attribute): Cell with ID "
+    //           << cell_id << " not found. Returning default attribute 0.0." << std::endl;
+    // return 0.0;
+
+    // 选项 B: 抛出异常 (通常更好，让调用者知道出错了)
+    throw std::out_of_range("Mesh_cpp::get_cell_region_attribute: Cell ID " + std::to_string(cell_id) + " not found.");
+
+    // 选项 C: 如果你的设计允许单元属性有一个明确的“未找到”或“无效”的值，可以返回那个值
+    // return SOME_INVALID_ATTRIBUTE_VALUE;
+}
 
 bool Mesh_cpp::read_edge_file_cpp(const std::string& filepath_utf8, std::vector<int>& flat_data, int& num_edges_out, int& num_edge_attrs_out) { // 读取边文件(C++) 实现
     if (filepath_utf8.empty()) { // 如果文件路径为空
@@ -245,61 +292,67 @@ bool Mesh_cpp::read_edge_file_cpp(const std::string& filepath_utf8, std::vector<
         return true;
 } // 结束函数
 
-void Mesh_cpp::load_mesh_from_files(const std::string& node_filepath, // 从文件加载网格数据实现
+
+void Mesh_cpp::load_mesh_from_files(const std::string& node_filepath,
                                   const std::string& cell_filepath,
                                   const std::string& edge_filepath,
-                                  const std::vector<double>& cell_manning_values) {
-    std::cout << "C++ Mesh: Starting to load mesh from files..." << std::endl; // 打印开始加载信息
-    std::cout << "  Node file: " << node_filepath << std::endl; // 打印节点文件路径
-    std::cout << "  Cell file: " << cell_filepath << std::endl; // 打印单元文件路径
-    std::cout << "  Edge file: " << (edge_filepath.empty() ? "Not provided" : edge_filepath) << std::endl; // 打印边文件路径
-
-    std::vector<double> flat_nodes_vec; // 存储扁平化节点数据的vector
-    int num_nodes_read, node_attrs_read; // 存储读取的节点数和属性数
-    if (!read_node_file_cpp(node_filepath, flat_nodes_vec, num_nodes_read, node_attrs_read)) { // 调用读取节点文件函数
-        throw std::runtime_error("Failed to read node file: " + node_filepath); // 抛出运行时错误
+                                  const std::vector<double>& cell_manning_values) { // 4参数
+    std::cout << "C++ Mesh: Starting to load mesh from files..." << std::endl;
+    // ... (加载节点部分不变) ...
+    std::vector<double> flat_nodes_vec;
+    int num_nodes_read, node_attrs_read;
+    if (!this->read_node_file_cpp(node_filepath, flat_nodes_vec, num_nodes_read, node_attrs_read)) {
+        throw std::runtime_error("Failed to read node file: " + node_filepath);
     }
-    load_nodes_from_numpy(flat_nodes_vec, num_nodes_read, node_attrs_read); // 调用从NumPy加载节点数据的方法 (内部用vector)
-    std::cout << "  Loaded " << num_nodes_read << " nodes with " << node_attrs_read << " attributes each." << std::endl; // 打印加载节点信息
+    this->load_nodes_from_numpy(flat_nodes_vec, num_nodes_read, node_attrs_read);
+    std::cout << "  Loaded " << num_nodes_read << " nodes with " << node_attrs_read << " attributes each." << std::endl;
 
-    std::vector<int> flat_cells_vec; // 存储扁平化单元数据的vector
-    int num_cells_read, nodes_per_cell_read; // 存储读取的单元数和每单元节点数
-    if (!read_cell_file_cpp(cell_filepath, flat_cells_vec, num_cells_read, nodes_per_cell_read)) { // 调用读取单元文件函数
-        throw std::runtime_error("Failed to read cell file: " + cell_filepath); // 抛出运行时错误
+    // 为单元数据和区域属性创建vector
+    std::vector<int> flat_cells_connectivity_vec;
+    std::vector<double> cell_attributes_vec; // <<--- 用于存储从read_cell_file_cpp获取的属性
+    int num_cells_read, nodes_per_cell_read;
+
+    // 调用修改后的 read_cell_file_cpp
+    if (!this->read_cell_file_cpp(cell_filepath, flat_cells_connectivity_vec, cell_attributes_vec, num_cells_read, nodes_per_cell_read)) {
+        throw std::runtime_error("Failed to read cell file: " + cell_filepath);
     }
-    // 确保曼宁系数值数量与单元数量匹配 (如果提供了)
-    if (!cell_manning_values.empty() && cell_manning_values.size() != static_cast<size_t>(num_cells_read)) { // 如果数量不匹配
+
+    if (!cell_manning_values.empty() && cell_manning_values.size() != static_cast<size_t>(num_cells_read)) {
         std::cerr << "Warning: Provided " << cell_manning_values.size() << " Manning values, but read "
-                  << num_cells_read << " cells. Mismatched values might lead to default usage." << std::endl; // 打印警告
+                  << num_cells_read << " cells. Mismatched values might lead to default usage." << std::endl;
     }
-    load_cells_from_numpy(flat_cells_vec, num_cells_read, nodes_per_cell_read, cell_manning_values); // 调用从NumPy加载单元数据的方法
-    std::cout << "  Loaded " << num_cells_read << " cells with " << nodes_per_cell_read << " nodes each." << std::endl; // 打印加载单元信息
+     if (cell_attributes_vec.size() != static_cast<size_t>(num_cells_read)) {
+         std::cerr << "Warning: Number of read cell attributes (" << cell_attributes_vec.size()
+                   << ") does not match number of cells (" << num_cells_read
+                   << "). Region attributes might use defaults for some cells." << std::endl;
+         // 如果数量不匹配，load_cells_from_numpy 内部会处理（例如使用默认值）
+    }
 
-    std::vector<int> flat_edges_vec; // 存储扁平化边数据的vector
-    int num_edges_read = 0, edge_attrs_read = 0; // 初始化读取的边数和属性数
-    if (!edge_filepath.empty()) { // 如果边文件路径不为空
-        std::cout << "C++: Attempting to call read_edge_file_cpp for: " << edge_filepath << std::endl;
-        if (!read_edge_file_cpp(edge_filepath, flat_edges_vec, num_edges_read, edge_attrs_read)) { // 调用读取边文件函数
-            std::cout << "C++: read_edge_file_cpp returned false." << std::endl; // <--- 是否有这个输出？
-            if(num_edges_read != 0) { // 如果读取失败且num_edges_read不为0，说明是文件格式问题
+    // 调用 load_cells_from_numpy，传递5个参数
+    this->load_cells_from_numpy(flat_cells_connectivity_vec, num_cells_read, nodes_per_cell_read, cell_manning_values, cell_attributes_vec);
+    std::cout << "  Loaded " << num_cells_read << " cells with " << nodes_per_cell_read << " nodes each." << std::endl;
+
+    // ... (加载边和预计算部分不变) ...
+    std::vector<int> flat_edges_vec;
+    int num_edges_read = 0, edge_attrs_read = 0;
+    if (!edge_filepath.empty()) {
+        if (!this->read_edge_file_cpp(edge_filepath, flat_edges_vec, num_edges_read, edge_attrs_read)) {
+            if(num_edges_read != 0) { // Only throw if it tried to read but failed format-wise
                 throw std::runtime_error("Failed to read edge file: " + edge_filepath);
             }
-        }else {
-            std::cout << "C++: read_edge_file_cpp returned true. num_edges_read=" << num_edges_read << std::endl;
+             // If num_edges_read is 0, it means file not found or empty, which is handled as a warning by read_edge_file_cpp
         }
-
     }
-    if (num_edges_read > 0) { // 如果成功读取到边
-        std::cout << "  Loaded " << num_edges_read << " edges with " << edge_attrs_read << " attributes each." << std::endl; // 打印加载边信息
-    } else { // 否则
-        std::cout << "  No edge data loaded (or edge file not provided/empty)." << std::endl; // 打印无边数据信息
+    if (num_edges_read > 0) {
+        std::cout << "  Loaded " << num_edges_read << " edges with " << edge_attrs_read << " attributes each." << std::endl;
+    } else {
+        std::cout << "  No edge data loaded (or edge file not provided/empty)." << std::endl;
     }
 
-
-    std::cout << "C++ Mesh: Precomputing geometry and topology..." << std::endl; // 打印预计算信息
-    precompute_geometry_and_topology(flat_edges_vec, num_edges_read, edge_attrs_read); // 调用预计算几何和拓扑的方法
-    std::cout << "C++ Mesh: Loading and precomputation complete." << std::endl; // 打印加载完成信息
-} // 结束函数
+    std::cout << "C++ Mesh: Precomputing geometry and topology..." << std::endl;
+    this->precompute_geometry_and_topology(flat_edges_vec, num_edges_read, edge_attrs_read);
+    std::cout << "C++ Mesh: Loading and precomputation complete." << std::endl;
+}
 
 
 // load_nodes_from_numpy, load_cells_from_numpy, precompute_geometry_and_topology,
@@ -324,38 +377,57 @@ void Mesh_cpp::load_nodes_from_numpy(const std::vector<double>& flat_node_data, 
     }
 } // 结束函数
 
-void Mesh_cpp::load_cells_from_numpy(const std::vector<int>& flat_cell_data, int num_cells_in, int nodes_per_cell, // 从NumPy加载单元实现
-                                   const std::vector<double>& cell_manning_values) {
-    if (nodes_per_cell != 3) { // 当前硬编码为三角形
-        throw std::runtime_error("Currently only supports 3 nodes per cell (triangles)."); // 抛出运行时错误
+void Mesh_cpp::load_cells_from_numpy(const std::vector<int>& flat_cell_data, int num_cells_in, int nodes_per_cell,
+                                   const std::vector<double>& cell_manning_values,
+                                   const std::vector<double>& cell_region_attributes) {
+    if (nodes_per_cell != 3) {
+        throw std::runtime_error("Currently only supports 3 nodes per cell (triangles).");
     }
-    bool manning_provided = !cell_manning_values.empty(); // 检查是否提供了曼宁值
-    if (manning_provided && cell_manning_values.size() != static_cast<size_t>(num_cells_in) ) { // 如果提供了但数量不匹配
+    bool manning_provided = !cell_manning_values.empty();
+    if (manning_provided && cell_manning_values.size() != static_cast<size_t>(num_cells_in) ) {
         std::cerr << "Warning (load_cells_from_numpy): Number of Manning values (" << cell_manning_values.size()
                   << ") does not match number of cells (" << num_cells_in
-                  << "). Using default or first value if available for mismatched cells." << std::endl; // 打印警告
+                  << "). Manning values might be incorrect for some cells." << std::endl;
     }
 
-    cells.clear(); // 清空现有单元
-    cells.reserve(num_cells_in); // 预分配内存
-    for (int i = 0; i < num_cells_in; ++i) { // 遍历所有单元
-        int base_idx = i * (1 + nodes_per_cell); // 1 for cell_id + nodes_per_cell // 计算基准索引
-        int id = flat_cell_data[base_idx + 0]; // 获取单元ID
-        Cell_cpp current_cell(id); // 创建单元对象
-        current_cell.node_ids.reserve(nodes_per_cell); // 为节点ID列表预分配内存
-        for (int j = 0; j < nodes_per_cell; ++j) { // 遍历每单元的节点
-            current_cell.node_ids.push_back(flat_cell_data[base_idx + 1 + j]); // 添加节点ID
-        }
-        if (manning_provided) { // 如果提供了曼宁值
-            if (static_cast<size_t>(i) < cell_manning_values.size()) { // 如果当前索引在曼宁值列表范围内
-                current_cell.manning_n = cell_manning_values[i]; // 设置曼宁值
-            } else { // 如果超出范围 (数量不匹配时发生)
-                // current_cell.manning_n = cell_manning_values[0]; // 可以选择用第一个值作为备用，或保持默认
-            }
-        } // else 使用构造函数中的默认曼宁值
-        cells.emplace_back(current_cell); // 添加单元对象
+    bool region_attr_provided = !cell_region_attributes.empty();
+    if (region_attr_provided && cell_region_attributes.size() != static_cast<size_t>(num_cells_in)) {
+        std::cerr << "Warning (load_cells_from_numpy): Number of region attributes (" << cell_region_attributes.size()
+                  << ") does not match number of cells (" << num_cells_in
+                  << "). Region attributes will use defaults for some cells if undersupplied." << std::endl;
     }
-} // 结束函数
+
+    cells.clear();
+    cells.reserve(num_cells_in);
+    for (int i = 0; i < num_cells_in; ++i) {
+        int base_idx = i * (1 + nodes_per_cell);
+        int id = flat_cell_data[base_idx + 0];
+        Cell_cpp current_cell(id); // Cell_cpp构造函数会将region_attribute初始化为0.0
+        current_cell.node_ids.reserve(nodes_per_cell);
+        for (int j = 0; j < nodes_per_cell; ++j) {
+            current_cell.node_ids.push_back(flat_cell_data[base_idx + 1 + j]);
+        }
+
+        if (manning_provided) {
+            if (static_cast<size_t>(i) < cell_manning_values.size()) {
+                current_cell.manning_n = cell_manning_values[i];
+            } else {
+                // 如果曼宁值不足，使用Cell_cpp中定义的默认值
+                std::cerr << "Warning: Manning value for cell " << id << " not provided, using default " << current_cell.manning_n << std::endl;
+            }
+        }
+
+        if (region_attr_provided) {
+            if (static_cast<size_t>(i) < cell_region_attributes.size()) {
+                current_cell.region_attribute = cell_region_attributes[i];
+            } else {
+                 // 如果区域属性值不足，使用Cell_cpp中定义的默认值
+                std::cerr << "Warning: Region attribute for cell " << id << " not provided, using default " << current_cell.region_attribute << std::endl;
+            }
+        }
+        cells.emplace_back(current_cell);
+    }
+}
 
 void Mesh_cpp::precompute_geometry_and_topology(const std::vector<int>& flat_edge_data, int num_edges, int num_edge_attrs) { // 预计算几何和拓扑实现
     half_edges.clear(); // 清空可能已有的半边
@@ -476,34 +548,58 @@ void Mesh_cpp::assign_boundary_markers_to_halfedges_cpp(const std::vector<int>& 
     }
 
     int assigned_count = 0;
+    // ************************** 新增/修改的调试打印 **************************
+    std::cout << "DEBUG_ASSIGN_BC_MARKERS: Entering assign_boundary_markers_to_halfedges_cpp." << std::endl;
+    std::cout << "  Total half_edges to process: " << half_edges.size() << std::endl;
+    std::cout << "  Edge info map from .edge file has " << edge_info_map_from_file.size() << " entries." << std::endl;
+    // ***********************************************************************
+
     for (auto& he : half_edges) {
+        const Node_cpp* node1_ptr = nullptr;
+        const Node_cpp* node2_ptr = nullptr;
+        const HalfEdge_cpp* next_he_ptr = nullptr;
+
+        if (he.origin_node_id != -1) {
+            node1_ptr = get_node_by_id(he.origin_node_id);
+        }
+        if (he.next_half_edge_id != -1) {
+            next_he_ptr = get_half_edge_by_id(he.next_half_edge_id);
+            if (next_he_ptr && next_he_ptr->origin_node_id != -1) {
+                node2_ptr = get_node_by_id(next_he_ptr->origin_node_id);
+            }
+        }
+
+
+
         if (he.twin_half_edge_id == -1) { // 只处理边界半边
-            if (he.origin_node_id == -1 || he.next_half_edge_id == -1) continue;
-            const HalfEdge_cpp* next_he = get_half_edge_by_id(he.next_half_edge_id);
-            if (!next_he || next_he->origin_node_id == -1) continue;
+            std::cout << " (Boundary HE). "; // *标记为边界半边*
+            if (!node1_ptr || !next_he_ptr || !node2_ptr) {
+                std::cout << "Skipping due to invalid nodes/next_he." << std::endl;
+                continue;
+            }
 
             int n1_he = he.origin_node_id;
-            int n2_he = next_he->origin_node_id;
+            int n2_he = next_he_ptr->origin_node_id;
             std::pair<int, int> key_he = (n1_he < n2_he) ? std::make_pair(n1_he, n2_he) : std::make_pair(n2_he, n1_he);
 
             auto it = edge_info_map_from_file.find(key_he);
             if (it != edge_info_map_from_file.end()) {
-                he.boundary_marker = it->second.first;          // 设置类型标记
-                he.original_poly_segment_id = it->second.second; // 设置原始Segment ID
+                he.boundary_marker = it->second.first;
+                he.original_poly_segment_id = it->second.second;
                 assigned_count++;
+
             } else {
-                // 这条边界半边在 .edge 文件中没有对应的条目
-                // 这通常不应该发生，如果.edge文件是基于.poly正确生成的
-                // 除非是网格生成器自己创建的外部边界
-                he.boundary_marker = 1; // 默认为固壁 (或者您的其他默认值)
-                he.original_poly_segment_id = -1; // 无原始ID
-                // std::cerr << "警告: 无法在 .edge 文件数据中找到边界半边 (" << n1_he << "-" << n2_he << ") 的信息。默认为固壁，原始ID -1。" << std::endl;
+                he.boundary_marker = 1;
+                he.original_poly_segment_id = -1;
+
             }
         } else { // 内部半边
-            he.boundary_marker = 0; // 确保内部半边的标记是0
-            he.original_poly_segment_id = -1; // 内部半边没有原始.poly segment ID
+            he.boundary_marker = 0;
+            he.original_poly_segment_id = -1;
+
         }
     }
+    std::cout << "DEBUG_ASSIGN_BC_MARKERS: Assigned markers to " << assigned_count << " boundary half-edges." << std::endl;
     // std::cout << "  C++: 已为 " << assigned_count << " 个边界半边分配了标记和原始Segment ID。" << std::endl;
 }
 

@@ -9,6 +9,7 @@
 #include <vector>    // 包含vector容器
 #include <array>     // 包含array容器
 #include <limits>    // 为了 numeric_limits
+#include <set>      // 需要包含
 #include <iomanip> // 新增：为了std::fixed 和 std::setprecision
 
 namespace HydroCore { // HydroCore命名空间开始
@@ -33,14 +34,14 @@ HydroModelCore_cpp::~HydroModelCore_cpp() { // 析构函数实现
     // std::cout << "C++ HydroModelCore_cpp destroyed." << std::endl; // 打印析构信息
 } // 结束析构函数
 
-void HydroModelCore_cpp::initialize_model_from_files( // 从文件初始化模型实现
-    const std::string& node_filepath, // 节点文件路径
-    const std::string& cell_filepath, // 单元文件路径
-    const std::string& edge_filepath, // 边文件路径
-    const std::vector<double>& cell_manning_values, // 单元曼宁系数值
-    double gravity, double min_depth, double cfl, // 模拟参数
-    double total_t, double output_dt_interval, double max_dt_val, // 时间参数
-    ReconstructionScheme_cpp recon_scheme, // 数值方案
+void HydroModelCore_cpp::initialize_model_from_files(
+    const std::string& node_filepath,
+    const std::string& cell_filepath,
+    const std::string& edge_filepath,
+    const std::vector<double>& cell_manning_values, // Python端传入的曼宁值
+    double gravity, double min_depth, double cfl,
+    double total_t, double output_dt_interval, double max_dt_val,
+    ReconstructionScheme_cpp recon_scheme,
     RiemannSolverType_cpp riemann_solver,
     TimeScheme_cpp time_scheme) {
 
@@ -102,6 +103,287 @@ void HydroModelCore_cpp::_initialize_manning_from_mesh_internal() { // 从网格
     }
 } // 结束函数
 
+void HydroModelCore_cpp::setup_internal_flow_source(
+    const std::string& line_name,
+    const std::vector<int>& poly_node_ids_for_line_py,
+    const std::vector<TimeseriesPoint_cpp>& q_timeseries, // 接收时程数据
+    const std::array<double, 2>& direction_py
+) {
+    if (!mesh_internal_ptr) { // 检查网格指针
+        std::cerr << "ERROR (setup_internal_flow_source): Mesh not initialized for line '" << line_name << "'." << std::endl;
+        return;
+    }
+    if (poly_node_ids_for_line_py.size() < 2) { // 检查节点ID数量
+        std::cerr << "ERROR (setup_internal_flow_source): poly_node_ids_for_line must have at least 2 nodes for line '" << line_name << "'." << std::endl;
+        return;
+    }
+    if (q_timeseries.empty()) { // 检查时程数据是否为空
+        std::cerr << "WARNING (setup_internal_flow_source): q_timeseries is empty for line '" << line_name << "'. No flow will be applied." << std::endl;
+        // 即使时程为空，也可能需要设置方向和识别边，只是流量始终为0
+    }
+
+    std::cout << "C++ HydroModelCore: Setting up internal flow source '" << line_name << "'." << std::endl; // 打印设置信息
+    std::cout << "  Poly line nodes (original 1-based): ";
+    for (int id : poly_node_ids_for_line_py) std::cout << id << " ";
+    std::cout << std::endl;
+    std::cout << "  Direction: (" << direction_py[0] << "," << direction_py[1] << ")" << std::endl;
+    std::cout << "  Received " << q_timeseries.size() << " timeseries points." << std::endl;
+
+    // 存储时程数据和方向
+    internal_q_timeseries_data_map_internal[line_name] = q_timeseries;
+    // 如果时程数据非空，确保它是按时间排序的 (或者依赖Python端排序)
+    if (!internal_q_timeseries_data_map_internal[line_name].empty()) {
+        std::sort(internal_q_timeseries_data_map_internal[line_name].begin(),
+                  internal_q_timeseries_data_map_internal[line_name].end(),
+                  [](const TimeseriesPoint_cpp& a, const TimeseriesPoint_cpp& b) {
+                      return a.time < b.time;
+                  });
+    }
+    internal_flow_directions_map_internal[line_name] = direction_py;
+
+    // 清空这条线之前可能存在的边信息 (如果允许重复调用setup修改同一条线)
+    all_internal_flow_edges_info_map_internal[line_name].clear();
+    double current_line_total_length = 0.0; // 这条线的总长度
+
+    std::set<int> line_specific_mesh_node_ids; // 这条线上的网格节点ID
+
+    for (size_t i = 0; i < poly_node_ids_for_line_py.size() - 1; ++i) { // 遍历构成线的每条子线段
+        int p_start_id_poly_1_based = poly_node_ids_for_line_py[i];
+        int p_end_id_poly_1_based = poly_node_ids_for_line_py[i + 1];
+        int actual_mesh_start_node_id = p_start_id_poly_1_based - 1;
+        int actual_mesh_end_node_id = p_end_id_poly_1_based - 1;
+
+        const Node_cpp* n_p_start = mesh_internal_ptr->get_node_by_id(actual_mesh_start_node_id);
+        const Node_cpp* n_p_end = mesh_internal_ptr->get_node_by_id(actual_mesh_end_node_id);
+
+        if (!n_p_start || !n_p_end) {
+            std::cerr << "ERROR (setup_internal_flow_source line '" << line_name << "'): Could not find mesh nodes for polyline segment using mesh IDs "
+                      << actual_mesh_start_node_id << " or " << actual_mesh_end_node_id << std::endl;
+            continue;
+        }
+        // (这部分打印可以保留或简化)
+        std::cout << "  Processing segment for line '" << line_name << "' from original poly_node " << p_start_id_poly_1_based
+                  << " (mesh_id " << actual_mesh_start_node_id << ", coords: " << n_p_start->x << "," << n_p_start->y << ")"
+                  << " to original poly_node " << p_end_id_poly_1_based << " (mesh_id " << actual_mesh_end_node_id
+                  << ", coords: " << n_p_end->x << "," << n_p_end->y << ")" << std::endl;
+
+        line_specific_mesh_node_ids.insert(n_p_start->id);
+        line_specific_mesh_node_ids.insert(n_p_end->id);
+
+        for (const auto& node : mesh_internal_ptr->nodes) { // 寻找线段上的中间节点
+            double dist_start_node = std::sqrt(std::pow(node.x - n_p_start->x, 2) + std::pow(node.y - n_p_start->y, 2));
+            double dist_end_node = std::sqrt(std::pow(node.x - n_p_end->x, 2) + std::pow(node.y - n_p_end->y, 2));
+            double dist_start_end = std::sqrt(std::pow(n_p_start->x - n_p_end->x, 2) + std::pow(n_p_start->y - n_p_end->y, 2));
+            if (std::abs(dist_start_end) < 1e-9) {
+                 if (std::abs(dist_start_node) < 1e-9) {
+                    line_specific_mesh_node_ids.insert(node.id);
+                 }
+            } else if (std::abs(dist_start_node + dist_end_node - dist_start_end) < 1e-6 * dist_start_end) {
+                line_specific_mesh_node_ids.insert(node.id);
+            }
+        }
+    }
+    std::cout << "  Line '" << line_name << "': Identified " << line_specific_mesh_node_ids.size() << " mesh nodes on the polyline." << std::endl;
+
+    std::set<std::pair<int, int>> processed_physical_edges_for_this_line; // 避免重复处理这条线的物理边
+
+    for (const auto& he : mesh_internal_ptr->half_edges) { // 遍历所有半边
+        if (he.twin_half_edge_id == -1) continue; // 只关心内部边
+
+        const Node_cpp* n1 = mesh_internal_ptr->get_node_by_id(he.origin_node_id);
+        const HalfEdge_cpp* next_he_ptr = mesh_internal_ptr->get_half_edge_by_id(he.next_half_edge_id);
+        if (!n1 || !next_he_ptr) continue;
+        const Node_cpp* n2 = mesh_internal_ptr->get_node_by_id(next_he_ptr->origin_node_id);
+        if (!n2) continue;
+
+        bool n1_on_this_line = line_specific_mesh_node_ids.count(n1->id); // 检查节点是否属于当前处理的这条线
+        bool n2_on_this_line = line_specific_mesh_node_ids.count(n2->id);
+
+        if (n1_on_this_line && n2_on_this_line) { // 这条边是当前内部流量线的一部分
+            std::pair<int, int> phys_edge_key = (n1->id < n2->id) ? std::make_pair(n1->id, n2->id) : std::make_pair(n2->id, n1->id);
+            if (processed_physical_edges_for_this_line.count(phys_edge_key)) {
+                continue;
+            }
+            processed_physical_edges_for_this_line.insert(phys_edge_key);
+
+            const HalfEdge_cpp* twin_he_ptr = mesh_internal_ptr->get_half_edge_by_id(he.twin_half_edge_id);
+            if (!twin_he_ptr) continue;
+
+            int cell_id1 = he.cell_id;
+            int cell_id2 = twin_he_ptr->cell_id;
+            double dot_product = he.normal[0] * direction_py[0] + he.normal[1] * direction_py[1];
+
+            int source_cell_id_val;
+            int sink_cell_id_val;
+            const Cell_cpp* source_cell_ptr_val = nullptr;
+            const Cell_cpp* sink_cell_ptr_val = nullptr;
+
+            if (dot_product > 1e-3) {
+                source_cell_id_val = cell_id2;
+                sink_cell_id_val = cell_id1;
+                source_cell_ptr_val = mesh_internal_ptr->get_cell_by_id(cell_id2);
+                sink_cell_ptr_val = mesh_internal_ptr->get_cell_by_id(cell_id1);
+            } else if (dot_product < -1e-3) {
+                source_cell_id_val = cell_id1;
+                sink_cell_id_val = cell_id2;
+                source_cell_ptr_val = mesh_internal_ptr->get_cell_by_id(cell_id1);
+                sink_cell_ptr_val = mesh_internal_ptr->get_cell_by_id(cell_id2);
+            } else {
+                std::cout << "  Line '" << line_name << "': Skipping edge (" << n1->id << "-" << n2->id << ") as flow direction is nearly perpendicular." << std::endl;
+                continue;
+            }
+
+            if (source_cell_ptr_val && sink_cell_ptr_val) {
+                all_internal_flow_edges_info_map_internal[line_name].push_back({ // 添加到对应名称的vector中
+                    source_cell_id_val,
+                    sink_cell_id_val,
+                    source_cell_ptr_val,
+                    sink_cell_ptr_val,
+                    he.length
+                });
+                current_line_total_length += he.length;
+                std::cout << "  Line '" << line_name << "': Found segment HE_ID=" << he.id << " (len=" << he.length
+                          << "), Source: " << source_cell_id_val << ", Sink: " << sink_cell_id_val << std::endl;
+            } else {
+                std::cerr << "ERROR (setup_internal_flow_source line '" << line_name << "'): Could not get valid cell pointers for edge (HE_ID=" << he.id << ")" << std::endl;
+            }
+        }
+    }
+
+    internal_flow_line_total_lengths_map_internal[line_name] = current_line_total_length; // 存储这条线的总长度
+
+    if (current_line_total_length < 1e-6) {
+        std::cerr << "WARNING (setup_internal_flow_source line '" << line_name << "'): Total length of identified segments is zero. No flow will be effectively applied." << std::endl;
+        // 即使长度为0，也保留时程和方向，只是单位长度流量会是inf/nan，需要在apply时处理
+    }
+
+    std::cout << "  Line '" << line_name << "': Identified " << all_internal_flow_edges_info_map_internal[line_name].size() << " segments for source/sink." << std::endl;
+    std::cout << "  Line '" << line_name << "': Total length = " << current_line_total_length << std::endl;
+}
+
+StateVector HydroModelCore_cpp::_apply_internal_flow_source_terms(const StateVector& U_input, double dt, double time_current) {
+    StateVector U_output = U_input; // 复制输入状态
+
+    if (all_internal_flow_edges_info_map_internal.empty()) { // 如果没有任何已定义的内部流量线
+        return U_output;
+    }
+
+
+    // 遍历所有已定义的内部流量线 (通过map的键，即line_name)
+    for (auto const& [line_name, edge_info_list_for_line] : all_internal_flow_edges_info_map_internal) {
+        if (edge_info_list_for_line.empty()) { // 如果这条线没有识别出任何边
+            // std::cout << "  Skipping internal flow line '" << line_name << "' as it has no associated edges." << std::endl;
+            continue;
+        }
+
+        // 1. 获取这条线的时程数据、总长度和方向
+        auto it_ts = internal_q_timeseries_data_map_internal.find(line_name);
+        auto it_len = internal_flow_line_total_lengths_map_internal.find(line_name);
+        auto it_dir = internal_flow_directions_map_internal.find(line_name);
+
+        if (it_ts == internal_q_timeseries_data_map_internal.end() ||
+            it_len == internal_flow_line_total_lengths_map_internal.end() ||
+            it_dir == internal_flow_directions_map_internal.end()) {
+            std::cerr << "ERROR (_apply_internal_flow_source_terms): Missing data (timeseries, length, or direction) for line '" << line_name << "'. Skipping." << std::endl;
+            continue;
+        }
+
+        const std::vector<TimeseriesPoint_cpp>& q_timeseries = it_ts->second;
+        double total_length_for_line = it_len->second;
+        const std::array<double, 2>& direction_for_line = it_dir->second;
+
+        // 2. 从时程插值获取当前总流量 Q_total
+        double current_target_Q_total = get_timeseries_value_internal(q_timeseries, time_current);
+        if (std::isnan(current_target_Q_total)) { // 如果插值失败 (例如时间超出范围且未外插)
+            // std::cerr << "WARNING (_apply_internal_flow_source_terms line '" << line_name << "'): Could not get timeseries value for Q at t=" << time_current << ". Assuming Q=0." << std::endl;
+            current_target_Q_total = 0.0; // 或者其他默认处理
+        }
+
+        // 3. 计算单位长度流量
+        double current_Q_per_unit_length = 0.0;
+        if (total_length_for_line > epsilon) { // 避免除以零
+            current_Q_per_unit_length = current_target_Q_total / total_length_for_line;
+        } else if (std::abs(current_target_Q_total) > epsilon) { // 长度为0但流量不为0，警告
+            std::cerr << "WARNING (_apply_internal_flow_source_terms line '" << line_name << "'): Total length is zero but target Q is " << current_target_Q_total << ". Cannot apply flow." << std::endl;
+        }
+
+
+
+
+        // 4. 遍历这条线上的所有边并施加源项
+        for (const auto& edge_info : edge_info_list_for_line) {
+            double edge_length = edge_info.edge_length;
+            double Q_edge_total = current_Q_per_unit_length * edge_length; // 这条边承担的总流量
+
+            int source_cell_id = edge_info.source_cell_id;
+            int sink_cell_id = edge_info.sink_cell_id;
+            const Cell_cpp* source_cell_ptr = edge_info.source_cell_ptr;
+            const Cell_cpp* sink_cell_ptr = edge_info.sink_cell_ptr;
+
+            if (!source_cell_ptr || !sink_cell_ptr) { // 应该在setup时就保证了
+                continue;
+            }
+
+            // (这部分打印可以根据需要保留或移除)
+            // std::cout << "    Applying to edge (len=" << edge_length << "): Q_edge=" << Q_edge_total
+            //           << ". SourceCell=" << source_cell_id << ", SinkCell=" << sink_cell_id << std::endl;
+
+            double delta_V_total = Q_edge_total * dt;
+
+            double dU_h_source = (source_cell_ptr->area > epsilon) ? (delta_V_total / source_cell_ptr->area) : 0.0;
+            double dU_h_sink   = (sink_cell_ptr->area > epsilon) ? (delta_V_total / sink_cell_ptr->area) : 0.0;
+
+            double dU_hu_source = (source_cell_ptr->area > epsilon) ? (delta_V_total * direction_for_line[0] / source_cell_ptr->area) : 0.0;
+            double dU_hv_source = (source_cell_ptr->area > epsilon) ? (delta_V_total * direction_for_line[1] / source_cell_ptr->area) : 0.0;
+
+            double dU_hu_sink = (sink_cell_ptr->area > epsilon) ? (delta_V_total * direction_for_line[0] / sink_cell_ptr->area) : 0.0;
+            double dU_hv_sink = (sink_cell_ptr->area > epsilon) ? (delta_V_total * direction_for_line[1] / sink_cell_ptr->area) : 0.0;
+
+            U_output[source_cell_id][0] += dU_h_source;
+            U_output[source_cell_id][1] += dU_hu_source;
+            U_output[source_cell_id][2] += dU_hv_source;
+
+            U_output[sink_cell_id][0] -= dU_h_sink;
+            U_output[sink_cell_id][1] -= dU_hu_sink;
+            U_output[sink_cell_id][2] -= dU_hv_sink;
+
+            // (这部分打印也可以根据需要保留或移除)
+            // std::cout << "      SourceCell " << source_cell_id << ": dU_h=" << dU_h_source << ", dU_hu=" << dU_hu_source << ", dU_hv=" << dU_hv_source << std::endl;
+            // std::cout << "      SinkCell " << sink_cell_id << ": dU_h=" << -dU_h_sink << ", dU_hu=" << -dU_hu_sink << ", dU_hv=" << -dU_hv_sink << std::endl;
+        }
+    }
+    return U_output;
+}
+
+double HydroModelCore_cpp::get_timeseries_value_internal(const std::vector<TimeseriesPoint_cpp>& series, double time_current) const {
+    if (series.empty()) { // 如果时间序列为空
+        // std::cerr << "Warning (get_timeseries_value_internal): Timeseries is empty." << std::endl; // 打印警告
+        return std::numeric_limits<double>::quiet_NaN(); // 返回NaN
+    }
+
+    // 假设系列已按时间排序 (Python端应确保)
+    auto it_upper = std::lower_bound(series.begin(), series.end(), time_current,
+                                     [](const TimeseriesPoint_cpp& p, double val) {
+                                         return p.time < val;
+                                     });
+
+    if (it_upper == series.begin()) { // 如果 time_current 小于或等于序列中的第一个时间点
+        return series.front().value; // 返回第一个值 (不外插)
+    }
+    if (it_upper == series.end()) { // 如果 time_current 大于或等于序列中的最后一个时间点
+        return series.back().value; // 返回最后一个值 (不外插)
+    }
+
+    const TimeseriesPoint_cpp& p_upper = *it_upper; // 上界点
+    const TimeseriesPoint_cpp& p_lower = *(it_upper - 1); // 下界点
+
+    if (std::abs(p_upper.time - p_lower.time) < epsilon) { // 如果两个时间点非常接近
+        return p_upper.value; // 返回上界点的值
+    }
+
+    double t_ratio = (time_current - p_lower.time) / (p_upper.time - p_lower.time); // 计算插值比例
+    return p_lower.value + t_ratio * (p_upper.value - p_lower.value); // 返回插值结果
+}
 void HydroModelCore_cpp::set_initial_conditions_cpp(const StateVector& U_initial) { // 设置初始条件(C++)实现
     if (!model_fully_initialized_flag) { // 如果模型未完全初始化
         throw std::runtime_error("Model core not initialized before setting initial conditions."); // 抛出运行时错误
@@ -200,7 +482,7 @@ StateVector HydroModelCore_cpp::_calculate_rhs_explicit_part_internal(const Stat
     for (const auto& he : mesh_internal_ptr->half_edges) {
         // ... (获取 cell_L_ptr) ...
         const Cell_cpp* cell_L_ptr = mesh_internal_ptr->get_cell_by_id(he.cell_id);
-        // ...
+        if (!cell_L_ptr) continue; // Should not happen if mesh is consistent
 
         // 1. 获取左单元中心状态
         const auto& U_L_center_cons = U_current_rhs[cell_L_ptr->id];
@@ -214,6 +496,15 @@ StateVector HydroModelCore_cpp::_calculate_rhs_explicit_part_internal(const Stat
         std::array<double, 3> source_term_R_interface = {0.0, 0.0, 0.0}; // 初始化界面源项对R的贡献
 
         if (he.twin_half_edge_id != -1) { // --- 处理内部边 ---
+            // --- 添加调试打印：边界边RHS更新 ---
+            bool is_target_discharge_boundary = (he.boundary_marker == 10); // 假设10是你的流量边界标记
+            if (is_target_discharge_boundary && time_current_rhs < 0.1) { // 只在早期且为目标边界时打印
+                std::cout << "[DEBUG_RHS_UPDATE_BND] Time: " << time_current_rhs
+                          << ", Boundary HE_ID: " << he.id
+                          << ", Cell_L_ID: " << cell_L_ptr->id
+                          << ", Marker: " << he.boundary_marker << std::endl;
+            }
+            // --- 调试打印结束 ---
             if (static_cast<unsigned int>(he.id) >= static_cast<unsigned int>(he.twin_half_edge_id)) { continue; } // 避免重复
 
             const HalfEdge_cpp* he_twin_ptr = mesh_internal_ptr->get_half_edge_by_id(he.twin_half_edge_id);
@@ -269,6 +560,17 @@ StateVector HydroModelCore_cpp::_calculate_rhs_explicit_part_internal(const Stat
             source_term_R_interface[1] = 0.5 * gravity_internal * (h_R_star * h_R_star - U_R_center_cons[0] * U_R_center_cons[0]) * (-he.normal[0]);
             source_term_R_interface[2] = 0.5 * gravity_internal * (h_R_star * h_R_star - U_R_center_cons[0] * U_R_center_cons[0]) * (-he.normal[1]);
 
+            // 打印更新RHS前的状态
+            if (is_target_discharge_boundary && time_current_rhs < 0.1) {
+                std::cout << "  Flux from BC Handler (Cartesian): Fh=" << numerical_flux_cartesian[0]
+                          << ", Fhu=" << numerical_flux_cartesian[1] << ", Fhv=" << numerical_flux_cartesian[2] << std::endl;
+                std::cout << "  Source_L_Interface (Cartesian, if any): S_hu=" << source_term_L_interface[1] // 假设你这里计算了
+                          << ", S_hv=" << source_term_L_interface[2] << std::endl;
+                std::cout << "  RHS for Cell " << cell_L_ptr->id << " BEFORE [h,hu,hv]: ("
+                          << RHS_vector[cell_L_ptr->id][0] << ","
+                          << RHS_vector[cell_L_ptr->id][1] << ","
+                          << RHS_vector[cell_L_ptr->id][2] << ")" << std::endl;
+            }
             // 7. 更新RHS (通量贡献 + 界面源项贡献)
             // (符号约定：F指向外部为负，S指向内部为正，或者F和S都按流出单元为负)
             // Audusse (4.5): dU_i/dt = ... - F_ij + S_ij ...
@@ -287,8 +589,29 @@ StateVector HydroModelCore_cpp::_calculate_rhs_explicit_part_internal(const Stat
                     RHS_vector[cell_R_ptr->id][k] += source_R_val_times_length / cell_R_ptr->area; // 源项作用于R
                 }
             }
+            // 打印更新RHS后的状态
+            if (is_target_discharge_boundary && time_current_rhs < 0.1) {
+                std::cout << "  RHS for Cell " << cell_L_ptr->id << " AFTER [h,hu,hv]: ("
+                          << RHS_vector[cell_L_ptr->id][0] << ","
+                          << RHS_vector[cell_L_ptr->id][1] << ","
+                          << RHS_vector[cell_L_ptr->id][2] << ")" << std::endl;
+            }
 
         } else { // --- 处理边界边 ---
+            // ************************** 新增/修改的调试打印 **************************
+            if (he.boundary_marker == 10 && time_current_rhs < 0.2) { // 检查时间稍微延长一点
+                std::cout << "[DEBUG_RHS_BND_FLUX_CALC] Time: " << std::fixed << std::setprecision(5) << time_current_rhs
+                          << ", Boundary HE_ID: " << he.id
+                          << ", Cell_L_ID: " << cell_L_ptr->id
+                          << ", Marker: " << he.boundary_marker
+                          << ", OrigSegID: " << he.original_poly_segment_id
+                          << std::endl;
+                // 打印一下左单元的状态
+                std::cout << "  Cell_L U(h,hu,hv): " << U_current_rhs[cell_L_ptr->id][0] << ", "
+                          << U_current_rhs[cell_L_ptr->id][1] << ", "
+                          << U_current_rhs[cell_L_ptr->id][2] << std::endl;
+            }
+            // ***********************************************************************
             // 1. 界面底高程 (对于边界，可以认为外部单元底高程与内部单元相同，或使用实际边界高程)
             // 简单起见，Z_interface = Z_L_centroid; (这使得 h_L_star = h_L_center)
             // 或者，如果边界上有精确的 z_face: Z_interface = z_face; (你需要先计算z_face)
@@ -490,14 +813,10 @@ double HydroModelCore_cpp::_calculate_dt_internal() {
 
 
 void HydroModelCore_cpp::_handle_dry_cells_and_update_eta_internal() { // 处理干单元并更新水位(内部)实现
-    // const int problem_cell_vfr_1 = 1385; // 在函数开始处定义 // 注释掉旧的
-    // const int problem_cell_vfr_2 = 1419; // 注释掉旧的
-    // bool time_in_vfr_debug_range = (current_time_internal >= 4.99 && current_time_internal <= 5.01); // current_time_internal 需要能被访问 // 注释掉旧的
 
     // --- 修改：针对 t=0 时的调试 ---
     const int problem_cell_vfr_1 = 0; // 假设单元ID 0 是一个你想观察的单元（例如初始为湿的单元） // 新增：设置调试单元ID
     const int problem_cell_vfr_2 = -1; // 暂时禁用第二个问题单元的调试 // 新增：禁用第二个调试单元
-    bool time_in_vfr_debug_range = (std::abs(current_time_internal - 0.0) < epsilon); // 仅在 t=0 时激活调试 // 新增：设置调试时间范围为t=0
 
     if (!mesh_internal_ptr || !vfr_calculator_ptr || U_state_all_internal.size() != mesh_internal_ptr->cells.size()) {
         return;
@@ -509,10 +828,6 @@ void HydroModelCore_cpp::_handle_dry_cells_and_update_eta_internal() { // 处理
 
     std::vector<double> eta_new(mesh_internal_ptr->cells.size());
 
-    // const double vfr_debug_time_start = 4.99960; // 注释掉旧的
-    // const double vfr_debug_time_end   = 4.99980; // 注释掉旧的
-    const double vfr_debug_time_start = -0.001; // 确保 t=0 在此窗口内 // 新增：设置VFR调试起始时间
-    const double vfr_debug_time_end   = 0.001;  // 确保 t=0 在此窗口内 // 新增：设置VFR调试结束时间
 
     for (size_t i = 0; i < mesh_internal_ptr->cells.size(); ++i) {
         Cell_cpp& cell = mesh_internal_ptr->cells[i];
@@ -535,28 +850,6 @@ void HydroModelCore_cpp::_handle_dry_cells_and_update_eta_internal() { // 处理
         }
         // --- 修改结束 ---
 
-        bool is_this_problem_cell_for_vfr = (static_cast<int>(i) == problem_cell_vfr_1 || static_cast<int>(i) == problem_cell_vfr_2);
-        bool is_time_in_vfr_debug_window = (this->current_time_internal >= vfr_debug_time_start && this->current_time_internal <= vfr_debug_time_end);
-
-        if (is_this_problem_cell_for_vfr && is_time_in_vfr_debug_window) {
-            std::cout << std::fixed << std::setprecision(8); // 设置输出精度 // 新增：设置输出精度
-            std::cout << "DEBUG_VFR_CALL_INPUT: Time=" << this->current_time_internal << ", Cell=" << i
-                      << ", h_avg_in=" << U_cell[0]
-                      << ", eta_guess_in=" << eta_previous_internal[i];
-            const auto* cell_ptr_for_bverts = mesh_internal_ptr->get_cell_by_id(i);
-            if (cell_ptr_for_bverts && !cell_ptr_for_bverts->node_ids.empty()) {
-                std::vector<double> temp_b_verts;
-                for(int node_id_b : cell_ptr_for_bverts->node_ids) {
-                    const Node_cpp* node_b = mesh_internal_ptr->get_node_by_id(node_id_b);
-                    if(node_b) temp_b_verts.push_back(node_b->z_bed);
-                }
-                std::sort(temp_b_verts.begin(), temp_b_verts.end());
-                std::cout << ", b_verts={";
-                for(size_t k_b=0; k_b<temp_b_verts.size(); ++k_b) std::cout << temp_b_verts[k_b] << (k_b==temp_b_verts.size()-1 ? "" : ",");
-                std::cout << "}";
-            }
-            std::cout << std::endl;
-        }
 
         double h_avg_non_negative_for_vfr = std::max(0.0, U_cell[0]); // 计算用于VFR的非负平均水深 // 新增：获取非负平均水深
 
@@ -573,9 +866,6 @@ void HydroModelCore_cpp::_handle_dry_cells_and_update_eta_internal() { // 处理
                 b_sorted_cell_vfr.push_back(sorted_node.z_bed);
             }
 
-            if (is_this_problem_cell_for_vfr && is_time_in_vfr_debug_window) {
-                VFRCalculator_cpp::set_internal_debug_conditions(true, static_cast<int>(i), this->current_time_internal - 0.00001, this->current_time_internal + 0.00001);
-            }
 
             if (b_sorted_cell_vfr.size() == 3) { // 确保是三角形
                  eta_new[i] = vfr_calculator_ptr->get_eta_from_h(
@@ -586,15 +876,6 @@ void HydroModelCore_cpp::_handle_dry_cells_and_update_eta_internal() { // 处理
             } else { // 非三角形单元的备用逻辑
                  double base_elev_for_eta = b_sorted_cell_vfr.empty() ? cell.z_bed_centroid : b_sorted_cell_vfr[0]; // 获取基准高程
                  eta_new[i] = base_elev_for_eta + h_avg_non_negative_for_vfr; // eta = bed + h // 修改：使用h_avg_non_negative_for_vfr
-            }
-
-            if (is_this_problem_cell_for_vfr && is_time_in_vfr_debug_window) {
-                VFRCalculator_cpp::set_internal_debug_conditions(false, -1, -1e9, 1e9);
-            }
-
-            if (is_this_problem_cell_for_vfr && is_time_in_vfr_debug_window) {
-                std::cout << "DEBUG_VFR_CALL_OUTPUT: Time=" << this->current_time_internal << ", Cell=" << i
-                          << ", eta_new_out=" << eta_new[i] << std::endl;
             }
 
         } else { // 干单元
@@ -667,12 +948,17 @@ bool HydroModelCore_cpp::advance_one_step() {
     } // 新增：卡顿检测逻辑结束
 
     if (this->last_calculated_dt_internal > epsilon / 100.0) {
+        StateVector U_after_explicit_step; // 用于存储显式积分（可能包含摩擦）后的结果
         try {
-            U_state_all_internal = time_integrator_ptr->step(U_state_all_internal, this->last_calculated_dt_internal, current_time_internal);
+            U_after_explicit_step = time_integrator_ptr->step(U_state_all_internal, this->last_calculated_dt_internal, current_time_internal);
         } catch (const std::exception& e) {
             std::cerr << "Error during time integration step: " << e.what() << std::endl; throw;
         }
-        _handle_dry_cells_and_update_eta_internal();
+        // *** 在这里应用内部流量源项 ***
+        U_state_all_internal = _apply_internal_flow_source_terms(U_after_explicit_step, this->last_calculated_dt_internal, current_time_internal);
+        // ******************************
+
+        _handle_dry_cells_and_update_eta_internal(); // 然后处理干湿和更新水位
     }
 
     const double MAX_PHYSICAL_H = 1000.0; // 假设物理上可能的最大水深是1000米 (根据你的问题调整)

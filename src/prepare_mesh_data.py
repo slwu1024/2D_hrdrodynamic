@@ -508,18 +508,22 @@ def save_node_file_with_z(filepath, nodes_xy, z_coords, markers):  # 定义保�
         return False  # 返回 False 表示失败
 
 
-def save_cell_file(filepath, triangles):  # 定义保存单元文件的函数
-    print(f"保存单元文件到 {filepath}...")  # 打印开始保存单元文件的消息
+def save_cell_file(filepath, triangles, triangle_attributes): # 新增参数
+    print(f"保存单元文件 (含区域属性) 到 {filepath}...")
     try:
-        with open(filepath, 'w', encoding='utf-8') as f:  # 以写入模式打开文件，使用UTF-8编码
-            f.write(f"{len(triangles)} 3 0\n")  # 写入文件头：单元数、每个单元的节点数(3)、属性数(0)
-            for i, tri in enumerate(triangles):  # 遍历所有三角形单元
-                f.write(f"{i} {tri[0]} {tri[1]} {tri[2]}\n")  # 写入每行单元数据：单元ID、节点1 ID、节点2 ID、节点3 ID
-        print("单元文件保存成功.")  # 打印单元文件保存成功的消息
-        return True  # 返回 True 表示成功
-    except Exception as e:  # 捕获保存文件时可能发生的异常
-        print(f"保存单元文件 {filepath} 时出错: {e}")  # 打印保存文件出错的错误消息
-        return False  # 返回 False 表示失败
+        with open(filepath, 'w', encoding='utf-8') as f:
+            # 文件头现在需要指明有属性列
+            # <#单元数> <每个单元节点数(3)> <#单元属性(1)>
+            f.write(f"{len(triangles)} 3 1\n") # 指明有1个单元属性
+            for i, tri_nodes in enumerate(triangles):
+                attr = triangle_attributes[i] if triangle_attributes is not None and i < len(triangle_attributes) else 0.0 # 默认属性0
+                # 写入: 单元ID 节点1 节点2 节点3 属性
+                f.write(f"{i} {tri_nodes[0]} {tri_nodes[1]} {tri_nodes[2]} {attr:.1f}\n") # 将属性格式化为浮点数
+        print("单元文件 (含区域属性) 保存成功.")
+        return True
+    except Exception as e:
+        print(f"保存单元文件 {filepath} 时出错: {e}")
+        return False
 
 
 def save_edge_file(filepath, edges_data_list): # edges_data_list 是 (n1, n2, type_marker, original_seg_id) 的列表
@@ -733,27 +737,60 @@ if __name__ == "__main__":
             triangle_input['segment_markers'] = poly_data['segment_markers']
     if 'holes' in poly_data and len(poly_data['holes']) > 0: triangle_input['holes'] = poly_data['holes']
     # 区域处理（如果需要）
-    # if 'regions' in poly_data and len(poly_data['regions']) > 0:
-    #     triangle_input['regions'] = poly_data['regions'].tolist()
+    if 'regions' in poly_data and len(poly_data['regions']) > 0:
+        triangle_input['regions'] = poly_data['regions'].tolist()
 
-    # --- 步骤 3: 调用 triangle.triangulate 生成网格 (不变) ---
+    # --- 步骤 3: 调用 triangle.triangulate 生成网格 ---
     print("\n--- 步骤 3: 调用 triangle.triangulate 生成网格 ---")
     print(f"使用选项字符串: '{TRIANGLE_OPTS}'")
     try:
-        mesh_data_dict = triangle.triangulate(triangle_input, TRIANGLE_OPTS)  # 使用配置中的选项
+        mesh_data_dict = triangle.triangulate(triangle_input, TRIANGLE_OPTS)  # mesh_data_dict 在此定义
         print("网格生成成功。")
     except Exception as e:
         print(f"调用 triangle.triangulate 时出错: {e}")
         exit()
 
-    # --- 步骤 4: 提取生成的网格数据 (不变) ---
+    # --- 步骤 4: 提取生成的网格数据 ---
     print("\n--- 步骤 4: 提取生成的网格数据 ---")
-    # ... (代码不变) ...
+
     generated_nodes_xy = mesh_data_dict.get('vertices')
     generated_node_markers = mesh_data_dict.get('vertex_markers')
+
+    # vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+    # 确保这两行在这里，从 mesh_data_dict 中获取数据并赋值给这两个变量
     generated_triangles = mesh_data_dict.get('triangles')
+    generated_triangle_attributes = mesh_data_dict.get('triangle_attributes')
+    # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
     generated_edges = mesh_data_dict.get('edges')
     generated_edge_markers = mesh_data_dict.get('edge_markers')
+
+    # --- 现在，下面的代码块（您之前粘贴的那个）就可以安全地使用 generated_triangle_attributes 了 ---
+    if generated_triangles is None:
+        print("错误: triangle 未返回单元数据 ('triangles')...")
+        generated_triangles = np.array([], dtype=int).reshape(0, 3)
+        generated_triangle_attributes = np.array([], dtype=float)  # 保持一致性
+
+    if generated_triangle_attributes is not None:  # 此时 generated_triangle_attributes 应该已经被定义
+        print(f"提取到 {len(generated_triangle_attributes)} 个单元的区域属性。")
+        if generated_triangle_attributes.ndim > 1 and generated_triangle_attributes.shape[1] == 1:
+            generated_triangle_attributes = generated_triangle_attributes.ravel()
+            print(f"  区域属性已展平为一维数组，形状: {generated_triangle_attributes.shape}")
+        # ... (其他对 generated_triangle_attributes 的处理) ...
+    else:  # generated_triangle_attributes is None
+        print("警告: triangle 未返回单元区域属性 ('triangle_attributes')...")
+        if generated_triangles is not None and len(generated_triangles) > 0:
+            print("  将为所有单元生成默认区域属性值 0.0。")
+            generated_triangle_attributes = np.zeros(len(generated_triangles), dtype=float)
+        else:
+            generated_triangle_attributes = np.array([], dtype=float)
+            print("  由于没有单元数据，单元区域属性也为空。")
+
+
+    # --- 检查提取和处理后的变量 ---
+    print(f"最终 generated_triangles: shape={generated_triangles.shape if generated_triangles is not None else 'None'}")
+    print(
+        f"最终 generated_triangle_attributes: shape={generated_triangle_attributes.shape if generated_triangle_attributes is not None else 'None'}")
     # ******** 在这里插入 `edges_to_write` 的构建逻辑 ********
     print("\n--- 步骤 4b: 准备写入.edge文件的数据 (含原始Segment ID) ---")  # 新增打印
     edges_to_write = []
@@ -957,7 +994,23 @@ if __name__ == "__main__":
     # --- 步骤 7: 保存最终模型输入文件 ---
     print("\n--- 步骤 7: 保存最终模型输入文件 ---")
     save_node_file_with_z('../' + NODE_FINAL_FILE, generated_nodes_xy, mesh_z_bed, final_node_markers)
-    save_cell_file('../' + CELL_FINAL_FILE, generated_triangles)
+    # 在调用 save_cell_file 之前，确保 generated_triangles 和 generated_triangle_attributes 都是有效的 NumPy 数组
+    if generated_triangles is not None and generated_triangle_attributes is not None:
+        # 确保长度匹配 (在正常情况下，如果两者都来自triangle且处理正确，应该匹配)
+        if len(generated_triangles) == len(generated_triangle_attributes):
+            save_cell_file('../' + CELL_FINAL_FILE, generated_triangles, generated_triangle_attributes)  # 传递属性
+        else:
+            print(
+                f"错误: 单元数量 ({len(generated_triangles)}) 与单元属性数量 ({len(generated_triangle_attributes)}) 不匹配！无法保存带属性的单元文件。")
+            # 可以选择保存不带属性的单元文件作为备用，或者直接报错退出
+            # save_cell_file_without_attributes('../' + CELL_FINAL_FILE, generated_triangles) # 需要一个这样的函数
+    elif generated_triangles is not None:
+        print("警告: 单元属性数据无效，将尝试保存不含属性的单元文件。")
+        # save_cell_file_without_attributes('../' + CELL_FINAL_FILE, generated_triangles) # (如果需要)
+    else:
+        print("错误: 没有有效的单元数据可供保存。")
+
+    save_cell_file('../' + CELL_FINAL_FILE, generated_triangles, generated_triangle_attributes) # 传递属性
 
     # 修改 save_edge_file 的调用
     if generated_edges is not None and edges_to_write:  # 确保有边且edges_to_write已填充
@@ -972,14 +1025,14 @@ if __name__ == "__main__":
     print(f"\n网格数据准备流程完成。")
     # print(f"网格文件输出到: {output_dir_base}")
     print(f"VTK 可视化文件: {OUTPUT_VTK_VIS}")
-    # --- 步骤 9: (可选) 可视化 ---
-    print("\n--- 步骤 9: 可视化三维网格 ---")  # 修改打印信息
-    if generated_nodes_xy is not None and mesh_z_bed is not None and generated_triangles is not None:
-        # ******** 新增/修改代码开始 ********
-        visualize_mesh_3d(poly_data, generated_nodes_xy, mesh_z_bed, generated_triangles)  # 调用新的3D可视化函数
-        # ******** 新增/修改代码结束 ********
-    else:
-        print("  跳过可视化，因为缺少必要的网格数据。")  # 打印信息
+    # # --- 步骤 9: (可选) 可视化 ---
+    # print("\n--- 步骤 9: 可视化三维网格 ---")  # 修改打印信息
+    # if generated_nodes_xy is not None and mesh_z_bed is not None and generated_triangles is not None:
+    #     # ******** 新增/修改代码开始 ********
+    #     visualize_mesh_3d(poly_data, generated_nodes_xy, mesh_z_bed, generated_triangles)  # 调用新的3D可视化函数
+    #     # ******** 新增/修改代码结束 ********
+    # else:
+    #     print("  跳过可视化，因为缺少必要的网格数据。")  # 打印信息
 
     print("\n基于 triangle 库的网格数据准备流程完成。")
     print(f"最终节点文件: {NODE_FINAL_FILE}")  # 打印最终节点文件路径

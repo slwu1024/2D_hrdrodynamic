@@ -123,10 +123,10 @@ class HydroModel:  # 定义水动力模型类
             type_str = definition_py.get('type', 'WALL').upper()  # 获取类型字符串并转大写
             if type_str == "WALL":
                 bc_def_cpp.type = hydro_model_cpp.BoundaryType_cpp.WALL  # 设置类型
-            elif type_str == "WATERLEVEL_TIMESERIES":
-                bc_def_cpp.type = hydro_model_cpp.BoundaryType_cpp.WATERLEVEL_TIMESERIES  # 设置类型
-            elif type_str == "TOTAL_DISCHARGE_TIMESERIES":
-                bc_def_cpp.type = hydro_model_cpp.BoundaryType_cpp.TOTAL_DISCHARGE_TIMESERIES  # 设置类型
+            elif type_str == "WATERLEVEL":
+                bc_def_cpp.type = hydro_model_cpp.BoundaryType_cpp.WATERLEVEL  # 设置类型
+            elif type_str == "TOTAL_DISCHARGE":
+                bc_def_cpp.type = hydro_model_cpp.BoundaryType_cpp.TOTAL_DISCHARGE  # 设置类型
             elif type_str == "FREE_OUTFLOW":
                 bc_def_cpp.type = hydro_model_cpp.BoundaryType_cpp.FREE_OUTFLOW  # 设置类型
             else:

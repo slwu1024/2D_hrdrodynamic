@@ -82,7 +82,8 @@ PYBIND11_MODULE(hydro_model_cpp, m) { // 定义Python模块，名称为 hydro_mo
             if (!he) throw py::index_error("HalfEdge ID not found: " + std::to_string(he_id)); // 抛出异常
             return *he; // 返回半边的副本
         }, py::arg("he_id"), py::return_value_policy::copy, // 返回策略：副本
-           "Returns a copy of the half-edge with the specified ID."); // 方法文档字符串
+           "Returns a copy of the half-edge with the specified ID.") // 方法文档字符串
+        .def("get_cell_region_attribute", &Mesh_cpp::get_cell_region_attribute); // <--- 新增绑定
 
 
     py::class_<PrimitiveVars_cpp>(m, "PrimitiveVars_cpp") // 绑定 PrimitiveVars_cpp 结构体
@@ -108,15 +109,20 @@ PYBIND11_MODULE(hydro_model_cpp, m) { // 定义Python模块，名称为 hydro_mo
 
     py::enum_<BoundaryType_cpp>(m, "BoundaryType_cpp") // 绑定边界类型枚举
         .value("WALL", BoundaryType_cpp::WALL) // 墙体
-        .value("WATERLEVEL_TIMESERIES", BoundaryType_cpp::WATERLEVEL_TIMESERIES) // 水位时间序列
-        .value("TOTAL_DISCHARGE_TIMESERIES", BoundaryType_cpp::TOTAL_DISCHARGE_TIMESERIES) // 总流量时间序列
+        .value("WATERLEVEL", BoundaryType_cpp::WATERLEVEL) // 水位时间序列
+        .value("TOTAL_DISCHARGE", BoundaryType_cpp::TOTAL_DISCHARGE) // 总流量时间序列
         .value("FREE_OUTFLOW", BoundaryType_cpp::FREE_OUTFLOW) // 自由出流
         .value("UNDEFINED", BoundaryType_cpp::UNDEFINED) // 未定义
         .export_values(); // 导出枚举值到模块
 
     py::class_<BoundaryDefinition_cpp>(m, "BoundaryDefinition_cpp") // 绑定边界定义结构体
         .def(py::init<>()) // 默认构造函数
-        .def_readwrite("type", &BoundaryDefinition_cpp::type); // 绑定 type 属性
+        .def_readwrite("type", &HydroCore::BoundaryDefinition_cpp::type) // 已有的 type 成员
+        // ***** 在这里添加新成员的绑定 *****
+        .def_readwrite("has_flow_direction_hint", &HydroCore::BoundaryDefinition_cpp::has_flow_direction_hint)
+        .def_readwrite("flow_direction_hint_x", &HydroCore::BoundaryDefinition_cpp::flow_direction_hint_x)
+        .def_readwrite("flow_direction_hint_y", &HydroCore::BoundaryDefinition_cpp::flow_direction_hint_y);
+
 
     py::class_<TimeseriesPoint_cpp>(m, "TimeseriesPoint_cpp") // 绑定时间序列点结构体
         .def(py::init<>()) // 默认构造函数
@@ -242,6 +248,14 @@ PYBIND11_MODULE(hydro_model_cpp, m) { // 定义Python模块，名称为 hydro_mo
         .def("get_mesh_ptr", &HydroModelCore_cpp::get_mesh_ptr, // *** 改回 get_mesh_ptr ***
             py::return_value_policy::reference_internal,
             "Returns a const pointer to the internal mesh object (for inspection only).") // 方法文档字符串
+        // ************************** 新增绑定 **************************
+        .def("setup_internal_flow_source", &HydroModelCore_cpp::setup_internal_flow_source,
+             py::arg("line_name"),                     // 参数1: line_name
+             py::arg("poly_node_ids_for_line_py"),    // 参数2: poly_node_ids_for_line_py
+             py::arg("q_timeseries"),                  // 参数3: q_timeseries
+             py::arg("direction_py"),                  // 参数4: direction_py
+             "Sets up an internal flow source line with timeseries support.") // 文档字符串
+        // ***********************************************************
 
         .def("get_U_state_all_py", // 获取U状态 (NumPy)
             [](const HydroModelCore_cpp &self) { // lambda函数

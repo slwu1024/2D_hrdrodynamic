@@ -56,30 +56,42 @@ def load_cell_data_for_cpp(filepath): # 加载单元数据以供C++使用
     num_elements = 0 # 初始化单元数量
     nodes_per_ele = 0 # 初始化每单元节点数
     try:
-        with open(filepath, 'r') as f: # 打开文件
-            header = f.readline().split() # 读取头部
-            num_elements = int(header[0]) # 获取单元数量
-            nodes_per_ele = int(header[1]) # 获取每单元节点数
-            if nodes_per_ele != 3: # 检查是否为3
-                print(f"  错误: {filepath} 文件指示每个单元有 {nodes_per_ele} 个节点，但C++目前仅支持3。") # 打印错误
-                return None, 0, 0 # 返回None
+        with open(filepath, 'r') as f:
+            header = f.readline().split()
+            num_elements = int(header[0])
+            nodes_per_ele = int(header[1])
+            num_cell_attrs = int(header[2]) if len(header) > 2 else 0  # 新增：读取单元属性数量
 
-            flat_data_list = [] # 扁平化数据列表
-            for i in range(num_elements): # 遍历单元
-                line = f.readline().split() # 读取行
-                ele_id = int(line[0]) # 单元ID
-                node_ids_for_cell = [int(n_id) for n_id in line[1:nodes_per_ele + 1]] # 获取节点ID
+            if nodes_per_ele != 3:
+                print(f"错误: {filepath} ...仅支持3节点单元。")
+                return None, 0, 0, None  # 返回 None 代表属性数组
 
-                flat_data_list.append(ele_id) # 添加单元ID
-                flat_data_list.extend(node_ids_for_cell) # 添加节点ID
-        print(f"  为C++加载了 {num_elements} 个单元，每个单元 {nodes_per_ele} 个节点。") # 打印信息
-        return np.array(flat_data_list, dtype=int), num_elements, nodes_per_ele # 返回扁平化数组和数量
+            flat_data_list = []
+            cell_attributes_list = []  # 新增：存储单元属性
+
+            for i in range(num_elements):
+                line = f.readline().split()
+                ele_id = int(line[0])
+                node_ids_for_cell = [int(n_id) for n_id in line[1:nodes_per_ele + 1]]
+                flat_data_list.append(ele_id)
+                flat_data_list.extend(node_ids_for_cell)
+
+                if num_cell_attrs > 0 and len(line) > nodes_per_ele + 1:
+                    # 假设第一个属性是区域属性
+                    attr_val = float(line[nodes_per_ele + 1])
+                    cell_attributes_list.append(attr_val)
+                else:
+                    cell_attributes_list.append(0.0)  # 默认属性
+
+        print(f"  为C++加载了 {num_elements} 个单元，每个单元 {nodes_per_ele} 个节点，{num_cell_attrs} 个属性。")
+        return np.array(flat_data_list, dtype=int), num_elements, nodes_per_ele, np.array(cell_attributes_list,
+                                                                                          dtype=float)  # 返回属性数组
     except FileNotFoundError: # 文件未找到
         print(f"  错误: 单元文件 {filepath} 未找到。") # 打印错误
         return None, 0, 0 # 返回None
     except Exception as e: # 其他错误
         print(f"  读取单元文件 {filepath} 时出错: {e}") # 打印错误
-        return None, 0, 0 # 返回None
+        return None, 0, 0,None # 返回None
 
 
 def load_edge_data_for_cpp(filepath): # 加载边数据以供C++使用
@@ -130,13 +142,14 @@ def load_mesh_data_structure_cpp(node_file, cell_file, edge_file, cell_manning_v
 
     # 2. 加载单元
     print("步骤 2: 加载单元数据到C++...") # 打印步骤2
-    flat_cells_np, num_cells, nodes_per_cell = load_cell_data_for_cpp(cell_file) # 加载单元数据
-    if flat_cells_np is None: return None # 如果失败则返回None
+    flat_cells_np, num_cells, nodes_per_cell, cell_attributes_np = load_cell_data_for_cpp(cell_file)  # 获取属性
+    if flat_cells_np is None: return None
     # 确保 manning_values 长度与 num_cells 一致，如果需要传递
     if len(cell_manning_values_np) != num_cells: # 如果长度不一致
         print(f"警告: 提供的曼宁系数值数量 ({len(cell_manning_values_np)}) 与单元数量 ({num_cells}) 不符。将使用默认值或重复值。") # 打印警告
         # C++端 load_cells_from_numpy 会处理不匹配的情况，这里只是Python端的提醒
-    mesh_cpp_obj.load_cells_from_numpy(flat_cells_np, num_cells, nodes_per_cell, cell_manning_values_np) # 调用C++方法加载
+    mesh_cpp_obj.load_cells_from_numpy(flat_cells_np, num_cells, nodes_per_cell, cell_manning_values_np,
+                                       cell_attributes_np)
 
     # 3. 加载边数据 (用于边界标记)
     print("步骤 3: 加载边数据 (用于边界标记) 到C++...") # 打印步骤3

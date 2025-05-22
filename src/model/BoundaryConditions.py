@@ -213,7 +213,7 @@ class BoundaryConditionHandler:
             W_L_internal = self._conserved_to_primitive(U_L)  # 获取内部原始变量
             return self._handle_wall_boundary(W_L_internal, he)  # 处理墙体边界
 
-        elif bc_type == 'waterlevel_timeseries':  # 如果是水位时间序列边界
+        elif bc_type == 'waterlevel':  # 如果是水位时间序列边界
             target_eta = self._get_timeseries_value(marker, time_current, bc_type)  # 获取目标水位值
             if target_eta is None:  # 如果获取失败 (例如文件问题或时间超出范围)
                 print(f"警告: 无法获取水位边界条件标记 {marker} 的值。假定为墙体。")  # 打印警告
@@ -222,7 +222,7 @@ class BoundaryConditionHandler:
             # 水位边界处理函数内部会进行重构（如果需要）
             return self._handle_waterlevel_boundary(U_L, he, target_eta)  # 处理水位边界 (传入 U_L)
 
-        elif bc_type == 'total_discharge_timeseries':  # 如果是总流量时间序列边界
+        elif bc_type == 'total_discharge':  # 如果是总流量时间序列边界
             target_Q_total = self._get_timeseries_value(marker, time_current, bc_type)  # 获取目标总流量值
             if target_Q_total is None:  # 如果获取失败
                 print(f"警告: 无法获取总流量边界条件标记 {marker} 的值。假定为墙体。")  # 打印警告
