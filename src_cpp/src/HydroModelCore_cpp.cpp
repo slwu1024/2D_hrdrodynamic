@@ -827,7 +827,7 @@ double HydroModelCore_cpp::_calculate_dt_internal() {
     double cfl_term_at_problem_cell = 0.0;
 
     // 定义一个阈值，比如 min_depth_internal 的5倍。低于此阈值的水深将受到特殊处理。
-    const double shallow_water_threshold_for_dt = min_depth_internal * 5.0; // 新增：为dt计算定义一个浅水阈值
+    const double shallow_water_threshold_for_dt = std::max(min_depth_internal * 50.0, 1e-4); // 新增：为dt计算定义一个浅水阈值
     // 定义在浅水区dt计算中允许的最大速度（如果不想完全置零）
     const double max_speed_in_shallow_for_dt = 0.1; // 例如0.1 m/s，非常小 // 新增：为dt计算在浅水区设置一个最大速度
 
@@ -910,25 +910,26 @@ double HydroModelCore_cpp::_calculate_dt_internal() {
 
     double calculated_dt = cfl_number_internal / min_dt_inv_term;
 
-    // 保持 CRITICAL_DT_INFO 日志，触发阈值 5e-6 仍然适用
-    if (calculated_dt < 0.000005 && problematic_cell_id_for_dt != -1) {
-        const Cell_cpp& p_cell = mesh_internal_ptr->cells[problematic_cell_id_for_dt];
-        double ph_orig = U_state_all_internal[problematic_cell_id_for_dt][0];
-        double phu_orig = U_state_all_internal[problematic_cell_id_for_dt][1];
-        double phv_orig = U_state_all_internal[problematic_cell_id_for_dt][2];
+    static int dt_calc_print_counter = 0;
+    if (problematic_cell_id_for_dt != -1 && dt_calc_print_counter % 100 == 0) { // 每100次dt计算打印一次
+        const Cell_cpp& p_cell_info = mesh_internal_ptr->cells[problematic_cell_id_for_dt];
+        double ph_orig_info = U_state_all_internal[problematic_cell_id_for_dt][0];
+        double phu_orig_info = U_state_all_internal[problematic_cell_id_for_dt][1];
+        double phv_orig_info = U_state_all_internal[problematic_cell_id_for_dt][2];
 
-        std::cout << std::fixed << std::setprecision(10);
-        std::cout << "C++ CRITICAL_DT_INFO (Threshold 5e-6): Time=" << current_time_internal
-                  << ", Calculated dt=" << calculated_dt
-                  << ". Problem Cell ID: " << problematic_cell_id_for_dt
-                  << ", Orig_h=" << ph_orig << ", Orig_hu=" << phu_orig << ", Orig_hv=" << phv_orig
-                  << ", h_of_prob_cell=" << h_at_problem_cell // 之前记录的h (原始h)
-                  << ", u_eff_in_dt=" << u_at_problem_cell // 之前记录的u (可能修正后)
-                  << ", v_eff_in_dt=" << v_at_problem_cell // 之前记录的v (可能修正后)
-                  << ", cell_area=" << p_cell.area
-                  << ", cell_CFL_term_val=" << cfl_term_at_problem_cell
+        std::cout << std::fixed << std::setprecision(10); // 保证精度
+        std::cout << "C++ DT_LIMITING_CELL_INFO: Time=" << current_time_internal
+                  << ", Target_dt_before_max_dt_clip=" << calculated_dt // 这是CFL计算出的dt
+                  << ", Problem_Cell_ID=" << problematic_cell_id_for_dt
+                  << ", Orig_h=" << ph_orig_info << ", Orig_hu=" << phu_orig_info << ", Orig_hv=" << phv_orig_info
+                  << ", h_for_dt_calc=" << h_at_problem_cell // 用于dt计算的h
+                  << ", u_eff_in_dt=" << u_at_problem_cell // 用于dt计算的u (可能修正后)
+                  << ", v_eff_in_dt=" << v_at_problem_cell // 用于dt计算的v (可能修正后)
+                  << ", cell_area=" << p_cell_info.area
+                  << ", cell_CFL_term_sum_lambda_L_over_A=" << cfl_term_at_problem_cell // (sum |un_i|+c_i * L_i) / Area_cell
                   << std::endl;
     }
+    dt_calc_print_counter++;
 
     return std::min(calculated_dt, max_dt_internal);
 }

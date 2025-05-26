@@ -9,7 +9,6 @@
       <excludeFolder url="file://$MODULE_DIR$/_skbuild/win-amd64-3.10/cmake-build/extern/pybind11/CMakeFiles" />
       <excludeFolder url="file://$MODULE_DIR$/_skbuild/win-amd64-3.10/cmake-install" />
       <excludeFolder url="file://$MODULE_DIR$/_skbuild/win-amd64-3.10/setuptools" />
-      <excludeFolder url="file://$MODULE_DIR$/hydro_model_pkg.egg-info" />
       <excludeFolder url="file://$MODULE_DIR$/output" />
       <excludeFolder url="file://$MODULE_DIR$/src_cpp/.idea" />
       <excludeFolder url="file://$MODULE_DIR$/src_cpp/cmake-build-debug/.cmake" />
@@ -21,7 +20,6 @@
       <excludeFolder url="file://$MODULE_DIR$/算例/00 简单水槽测试边界条件/output_simple_channel_wl" />
       <excludeFolder url="file://$MODULE_DIR$/论文/干湿边界" />
       <excludeFolder url="file://$MODULE_DIR$/_skbuild" />
-      <excludeFolder url="file://$MODULE_DIR$/mesh" />
       <excludeFolder url="file://$MODULE_DIR$/src_cpp/cmake-build-debug" />
     </content>
     <orderEntry type="jdk" jdkName="Python 3.10" jdkType="Python SDK" />

@@ -1,0 +1,4 @@
+[build-system]
+requires = ["setuptools>=42", "wheel", "scikit-build>=0.15.0"] # 确保 skbuild 版本较新
+build-backend = "setuptools.build_meta"
+#backend-path = ["."] # 告诉构建后端在哪里可以找到 setuptools (当前目录)

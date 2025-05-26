@@ -573,11 +573,7 @@ void Mesh_cpp::assign_boundary_markers_to_halfedges_cpp(const std::vector<int>& 
 
 
         if (he.twin_half_edge_id == -1) { // 只处理边界半边
-            std::cout << " (Boundary HE). "; // *标记为边界半边*
-            if (!node1_ptr || !next_he_ptr || !node2_ptr) {
-                std::cout << "Skipping due to invalid nodes/next_he." << std::endl;
-                continue;
-            }
+
 
             int n1_he = he.origin_node_id;
             int n2_he = next_he_ptr->origin_node_id;
