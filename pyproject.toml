@@ -1,4 +1,29 @@
 [build-system]
-requires = ["setuptools>=42", "wheel", "scikit-build>=0.15.0"] # 确保 skbuild 版本较新
+requires = [
+    "setuptools>=42",
+    "wheel",
+    "scikit-build>=0.15.0",
+    "cmake>=3.18",
+    "ninja; platform_system!='Windows'",
+    "ninja>=1.10; platform_system=='Windows'",
+    "pybind11>=2.6"
+]
 build-backend = "setuptools.build_meta"
-#backend-path = ["."] # 告诉构建后端在哪里可以找到 setuptools (当前目录)
+# NO backend-path HERE
+
+[project]
+name = "hydro_model_pkg" # 这个名字会用于 .egg-info
+version = "0.1.0"
+description = "A 2D Hydrodynamic Model with a C++ core"
+authors = [{name = "wsl"}]
+license = "MIT"
+requires-python = ">=3.8"
+dependencies = [
+    'numpy',
+    'scipy',
+    'matplotlib',
+    'pandas',
+    'pykrige',
+    'PyYAML',
+    'meshio'
+]

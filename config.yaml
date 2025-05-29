@@ -16,13 +16,12 @@ mesh_generation:
 
 simulation_control:
   total_time: 259200.0 # 对应你的CSV数据
-  output_dt: 3600.0  # 例如，每天输出一次
+  output_dt: 3600.0  # 输出频率
   cfl_number: 0.8
-  max_dt: 1800.0      # 例如，最大半小时
+  max_dt: 1800.0      # 最大时间步长
   use_gpu: false  # 总开关：true 或 false
-  gpu_modules: # 如果 use_gpu 为 true，这里指定哪些模块用GPU
+  gpu_modules:
       - "friction"
-    # - "rhs" # 未来可能添加
 
 physical_parameters:
   gravity: 9.81
@@ -35,7 +34,7 @@ numerical_schemes:
 
 model_parameters:
   manning_file: "data/manning_values.txt" # 如果没有，会用默认值
-  manning_n_default: 0.025             # 根据实际情况调整
+  manning_n_default: 0.025             # 曼宁系数
 
 initial_conditions:
   hu: 0.0

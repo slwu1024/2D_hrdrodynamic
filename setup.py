@@ -1,46 +1,35 @@
 # setup.py
 from skbuild import setup
-import os # 导入 os 模块
+import os
+
+# --- 控制是否编译CUDA版本 ---
+# BUILD_WITH_CUDA = True # 或者 False，根据你的需要
+# 动态地从环境变量决定是否启用CUDA会更灵活
+enable_cuda_env = os.environ.get('ENABLE_CUDA_BUILD', 'OFF').upper()
+BUILD_WITH_CUDA = True if enable_cuda_env == 'ON' else False
+
+cmake_args_list = ['-DCMAKE_VERBOSE_MAKEFILE:BOOL=ON']
+if BUILD_WITH_CUDA:
+    print("INFO: setup.py - Enabling CUDA in CMake arguments.")
+    cmake_args_list.append('-DENABLE_CUDA=ON')
+    cuda_arch = os.environ.get('CMAKE_CUDA_ARCHITECTURES')
+    if cuda_arch:
+        cmake_args_list.append(f'-DCMAKE_CUDA_ARCHITECTURES={cuda_arch}')
+        print(f"INFO: setup.py - Setting CMAKE_CUDA_ARCHITECTURES to {cuda_arch}")
+else:
+    print("INFO: setup.py - Disabling CUDA in CMake arguments.")
+    cmake_args_list.append('-DENABLE_CUDA=OFF')
 
 setup(
     name="hydro_model_pkg",
     version="0.1.0",
     author="wsl",
     description="A 2D Hydrodynamic Model with a C++ core",
-    license="MIT",
-
-    cmake_source_dir='src_cpp/', # C++ 源代码在 src_cpp 目录下
-
-    # 告诉 setuptools 编译后的 C++ 扩展 (由 CMake install 安装的)
-    # 应该被认为是包的一部分，并且位于项目的根目录下。
-    # cmake_install_dir 的路径是相对于最终包的安装位置的。
-    # 对于一个直接导入的 .pyd 文件，我们希望它在顶层。
-    # scikit-build 会处理将 _skbuild/<platform>/cmake-install/ 的内容
-    # 映射到这个相对路径。
-    cmake_install_dir='.', # 安装到包的根目录
-
-    # packages 和 py_modules 保持为空，因为我们只依赖 CMake 构建的 C++ 扩展
-    packages=[],
-    py_modules=[],
-
-    # 修改 cmake_args
-    # -G Ninja 尝试强制使用 Ninja 生成器
-    # -DCMAKE_MAKE_PROGRAM=ninja 尝试明确告诉 CMake ninja 可执行文件的名字 (它应该会从 PATH 中查找)
-    cmake_args=[
-        '-G', 'Ninja',  # 指定使用 Ninja 作为 CMake 生成器
-        '-DCMAKE_MAKE_PROGRAM=ninja', # 指定 ninja 可执行程序 (应从 PATH 查找)
-        '-DCMAKE_VERBOSE_MAKEFILE:BOOL=ON' # 开启详细的 Makefile 输出，方便调试
-    ],
-
-    install_requires=[ # 列出项目依赖的 Python 包
-        'numpy',
-        'pybind11>=2.6',
-        'scipy',
-        'matplotlib',
-        'pandas',
-        'pykrige',
-        'PyYAML',
-        'meshio'
-    ],
-    python_requires='>=3.8', # 指定项目兼容的 Python 版本
+    license="MIT", # 已在 pyproject.toml 中处理
+    cmake_source_dir='src_cpp/',
+    cmake_args=cmake_args_list, # 确保这个参数被正确使用
+    # packages=[], # 如果没有纯Python包，可以为空或省略
+    # py_modules=[], # 如果没有顶层纯Python模块，可以为空或省略
+    # install_requires=[], # 运行时依赖在 pyproject.toml 的 [project.dependencies] 中定义
+    python_requires='>=3.8',
 )

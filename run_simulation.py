@@ -69,191 +69,180 @@ def load_config(config_filepath='config.yaml'):  # 加载配置文件函数
         sys.exit(1)  # 退出程序
 
 
-def get_parameters_from_config(config_data):  # 从配置数据获取参数函数
+def get_parameters_from_config(config_data):
     """从加载的配置字典中提取并返回结构化的参数。"""
-    params = {}  # 初始化参数字典
+    params = {} # 初始化参数字典
     # 文件路径
-    fp_conf = config_data.get('file_paths', {})  # 获取文件路径配置
-    params['node_file'] = fp_conf.get('node_file')  # 获取节点文件路径
-    params['cell_file'] = fp_conf.get('cell_file')  # 获取单元文件路径
-    params['edge_file'] = fp_conf.get('edge_file')  # 获取边文件路径
-    params['output_directory'] = fp_conf.get('output_directory', 'output')  # 获取输出目录，默认为'output'
+    fp_conf = config_data.get('file_paths', {}) # 获取文件路径配置，如果不存在则为空字典
+    params['node_file'] = fp_conf.get('node_file') # 获取节点文件路径
+    params['cell_file'] = fp_conf.get('cell_file') # 获取单元文件路径
+    params['edge_file'] = fp_conf.get('edge_file') # 获取边文件路径
+    params['output_directory'] = fp_conf.get('output_directory', 'output') # 获取输出目录，默认为'output'
+    # ***** 直接读取 'boundary_timeseries_file' *****
+    params['boundary_timeseries_file'] = fp_conf.get('boundary_timeseries_file') # 获取边界时程文件路径
 
     # 模拟控制
-    sc_conf = config_data.get('simulation_control', {})  # 获取模拟控制配置
-    params['total_time'] = float(sc_conf.get('total_time', 10.0))  # 获取总模拟时长，转为浮点数
-    params['output_dt'] = float(sc_conf.get('output_dt', 1.0))  # 获取输出时间间隔，转为浮点数
-    params['cfl_number'] = float(sc_conf.get('cfl_number', 0.5))  # 获取CFL数，转为浮点数
-    params['max_dt'] = float(sc_conf.get('max_dt', 0.1))  # 获取最大时间步长，转为浮点数
+    sc_conf = config_data.get('simulation_control', {}) # 获取模拟控制配置
+    params['total_time'] = float(sc_conf.get('total_time', 10.0)) # 总模拟时长
+    params['output_dt'] = float(sc_conf.get('output_dt', 1.0)) # 输出时间间隔
+    params['cfl_number'] = float(sc_conf.get('cfl_number', 0.5)) # CFL数
+    params['max_dt'] = float(sc_conf.get('max_dt', 0.1)) # 最大时间步长
+    params['use_gpu'] = bool(sc_conf.get('use_gpu', False)) # 是否使用GPU
+    params['gpu_modules_to_enable'] = sc_conf.get('gpu_modules', []) # GPU启用的模块
+    if not isinstance(params['gpu_modules_to_enable'], list): # 确保是列表
+        print(
+            f"警告: config.yaml 中的 'gpu_modules' 不是一个列表，将被视为空列表。得到类型: {type(params['gpu_modules_to_enable'])}")
+        params['gpu_modules_to_enable'] = []
 
     # 物理参数
-    pp_conf = config_data.get('physical_parameters', {})  # 获取物理参数配置
-    params['gravity'] = float(pp_conf.get('gravity', 9.81))  # 获取重力加速度，转为浮点数
-    params['min_depth'] = float(pp_conf.get('min_depth', 1e-6))  # 获取最小水深，转为浮点数
+    pp_conf = config_data.get('physical_parameters', {}) # 获取物理参数配置
+    params['gravity'] = float(pp_conf.get('gravity', 9.81)) # 重力加速度
+    params['min_depth'] = float(pp_conf.get('min_depth', 1e-6)) # 最小水深
 
     # 数值方案
-    ns_conf = config_data.get('numerical_schemes', {})  # 获取数值方案配置
-    recon_str = ns_conf.get('reconstruction_scheme', 'FIRST_ORDER').upper()  # 获取重构方案字符串
-    params['recon_scheme_cpp'] = getattr(hydro_model_cpp.ReconstructionScheme_cpp, recon_str,  # 获取C++重构方案枚举值
-                                         hydro_model_cpp.ReconstructionScheme_cpp.FIRST_ORDER)  # 默认一阶
-    riemann_str = ns_conf.get('riemann_solver', 'HLLC').upper()  # 获取黎曼求解器字符串
-    params['riemann_solver_cpp'] = getattr(hydro_model_cpp.RiemannSolverType_cpp, riemann_str,  # 获取C++黎曼求解器枚举值
-                                           hydro_model_cpp.RiemannSolverType_cpp.HLLC)  # 默认HLLC
-    time_str = ns_conf.get('time_scheme', 'RK2_SSP').upper()  # 获取时间积分方案字符串
-    params['time_scheme_cpp'] = getattr(hydro_model_cpp.TimeScheme_cpp, time_str,  # 获取C++时间积分方案枚举值
-                                        hydro_model_cpp.TimeScheme_cpp.RK2_SSP)  # 默认RK2_SSP
+    ns_conf = config_data.get('numerical_schemes', {}) # 获取数值方案配置
+    recon_str = ns_conf.get('reconstruction_scheme', 'FIRST_ORDER').upper() # 重构方案字符串
+    params['recon_scheme_cpp'] = getattr(hydro_model_cpp.ReconstructionScheme_cpp, recon_str,
+                                         hydro_model_cpp.ReconstructionScheme_cpp.FIRST_ORDER) # C++重构方案枚举
+    riemann_str = ns_conf.get('riemann_solver', 'HLLC').upper() # 黎曼求解器字符串
+    params['riemann_solver_cpp'] = getattr(hydro_model_cpp.RiemannSolverType_cpp, riemann_str,
+                                           hydro_model_cpp.RiemannSolverType_cpp.HLLC) # C++黎曼求解器枚举
+    time_str = ns_conf.get('time_scheme', 'RK2_SSP').upper() # 时间积分方案字符串
+    params['time_scheme_cpp'] = getattr(hydro_model_cpp.TimeScheme_cpp, time_str,
+                                        hydro_model_cpp.TimeScheme_cpp.RK2_SSP) # C++时间积分方案枚举
 
     # 曼宁系数相关
-    mp_conf = config_data.get('model_parameters', {})  # 获取模型参数配置
-    params['manning_file'] = mp_conf.get('manning_file')  # 获取曼宁文件路径
-    params['default_manning'] = float(mp_conf.get('manning_n_default', 0.025))  # 获取默认曼宁系数，转为浮点数
+    mp_conf = config_data.get('model_parameters', {}) # 获取模型参数配置
+    params['manning_file'] = mp_conf.get('manning_file') # 曼宁文件路径
+    params['default_manning'] = float(mp_conf.get('manning_n_default', 0.025)) # 默认曼宁系数
 
     # 初始条件
-    ic_conf_from_yaml = config_data.get('initial_conditions', {})  # 从YAML中获取初始条件配置字典
-    params['initial_conditions'] = ic_conf_from_yaml  # 新增: 将整个initial_conditions子字典存入params
-
-    # 为了兼容旧的直接从params获取初始条件参数的代码，可以保留下面这些，
-    # 但推荐后续都从 params['initial_conditions'] 中获取
-    params['initial_condition_type'] = ic_conf_from_yaml.get('type', 'uniform_elevation')  # 获取初始条件类型
+    ic_conf_from_yaml = config_data.get('initial_conditions', {}) # 获取初始条件配置
+    params['initial_conditions'] = ic_conf_from_yaml # 存储整个初始条件子字典
+    # (以下是为了兼容旧代码，推荐后续从 params['initial_conditions'] 获取)
+    params['initial_condition_type'] = ic_conf_from_yaml.get('type', 'uniform_elevation')
     params['initial_water_surface_elevation'] = float(
-        ic_conf_from_yaml.get('water_surface_elevation', 0.0))  # 获取初始水位，转为浮点数
-    params['initial_water_depth'] = float(ic_conf_from_yaml.get('water_depth', 0.1))  # 获取初始水深，转为浮点数
-    params['initial_hu'] = float(ic_conf_from_yaml.get('hu', 0.0))  # 获取初始hu，转为浮点数
-    params['initial_hv'] = float(ic_conf_from_yaml.get('hv', 0.0))  # 获取初始hv，转为浮点数
-
-    if params['initial_condition_type'] == 'dam_break_custom':  # 如果是自定义溃坝
-        params['dam_position_x'] = float(ic_conf_from_yaml.get('dam_position_x', 10.0))  # 获取坝位置x坐标
-        # 注意：这里的 water_depth_left/right 是旧的参数名，新配置里已经没有了
-        # 它们会被 prepare_initial_conditions 中更详细的 upstream/downstream 设置覆盖
-        params['water_depth_left'] = float(ic_conf_from_yaml.get('water_depth_left', 1.0))  # 获取左侧水深 (兼容旧配置)
-        params['water_depth_right'] = float(ic_conf_from_yaml.get('water_depth_right', 0.0))  # 获取右侧水深 (兼容旧配置)
+        ic_conf_from_yaml.get('water_surface_elevation', 0.0))
+    params['initial_water_depth'] = float(ic_conf_from_yaml.get('water_depth', 0.1))
+    params['initial_hu'] = float(ic_conf_from_yaml.get('hu', 0.0))
+    params['initial_hv'] = float(ic_conf_from_yaml.get('hv', 0.0))
+    if params['initial_condition_type'] == 'dam_break_custom':
+        params['dam_position_x'] = float(ic_conf_from_yaml.get('dam_position_x', 10.0))
+        params['water_depth_left'] = float(ic_conf_from_yaml.get('water_depth_left', 1.0))
+        params['water_depth_right'] = float(ic_conf_from_yaml.get('water_depth_right', 0.0))
     elif params['initial_condition_type'] == '2d_partial_dam_break':
-        params['dam_y_start'] = float(ic_conf_from_yaml.get('dam_y_start', 0.0))  # 大坝区域起始Y
-        params['dam_y_end'] = float(ic_conf_from_yaml.get('dam_y_end', 0.0))  # 大坝区域结束Y
-        params['breach_x_start'] = float(ic_conf_from_yaml.get('breach_x_start', 0.0))  # 溃口起始X
-        params['breach_x_end'] = float(ic_conf_from_yaml.get('breach_x_end', 0.0))  # 溃口结束X
+        params['dam_y_start'] = float(ic_conf_from_yaml.get('dam_y_start', 0.0))
+        params['dam_y_end'] = float(ic_conf_from_yaml.get('dam_y_end', 0.0))
+        params['breach_x_start'] = float(ic_conf_from_yaml.get('breach_x_start', 0.0))
+        params['breach_x_end'] = float(ic_conf_from_yaml.get('breach_x_end', 0.0))
         params['water_surface_elevation_upstream'] = float(
-            ic_conf_from_yaml.get('water_surface_elevation_upstream', 0.0))  # 上游水位
+            ic_conf_from_yaml.get('water_surface_elevation_upstream', 0.0))
         params['water_surface_elevation_downstream'] = float(
-            ic_conf_from_yaml.get('water_surface_elevation_downstream', 0.0))  # 下游水位
+            ic_conf_from_yaml.get('water_surface_elevation_downstream', 0.0))
 
-    # 边界条件
-    params['boundary_definitions_py'] = config_data.get('boundary_conditions', {}).get('definitions',
-                                                                                       {})  # 获取Python边界定义
-    params['boundary_timeseries_file'] = fp_conf.get('boundary_timeseries_file')  # 从配置中获取统一的边界时间序列文件路径
+    # 边界条件定义
+    bc_definitions_conf = config_data.get('boundary_conditions', {}) # 获取边界条件配置
+    params['boundary_definitions_py'] = bc_definitions_conf.get('definitions', {}) # 获取Python边界定义
 
-    # --- (新增) 读取剖面线定义 ---
-    raw_profile_lines = config_data.get('profile_output_lines', [])  # 从config_data获取剖面线定义，默认为空列表
-    params['profile_output_lines'] = []  # 初始化参数字典中的剖面线列表
-    if isinstance(raw_profile_lines, list):  # 确保获取到的是列表
-        for line_def in raw_profile_lines:  # 遍历原始剖面线定义
+    # 剖面线定义
+    raw_profile_lines = config_data.get('profile_output_lines', []) # 获取剖面线定义
+    params['profile_output_lines'] = []
+    if isinstance(raw_profile_lines, list):
+        for line_def in raw_profile_lines:
             if isinstance(line_def, dict) and \
                     'name' in line_def and \
                     'start_xy' in line_def and isinstance(line_def['start_xy'], list) and len(
                 line_def['start_xy']) == 2 and \
                     'end_xy' in line_def and isinstance(line_def['end_xy'], list) and len(
-                line_def['end_xy']) == 2:  # 检查必要字段和类型
-
-                try:  # 尝试转换
-                    start_xy = [float(line_def['start_xy'][0]), float(line_def['start_xy'][1])]  # 转换起点坐标
-                    end_xy = [float(line_def['end_xy'][0]), float(line_def['end_xy'][1])]  # 转换终点坐标
-                except ValueError:  # 捕获值错误
-                    print(f"警告: 剖面线 '{line_def.get('name', '未命名')}' 的坐标无法转换为浮点数，已跳过。")  # 打印警告
-                    continue  # 继续下一条剖面线
-
-                buffer_width = float(line_def.get('buffer_width', 0.1))  # 获取缓冲宽度，默认为0.1
-                is_enabled = line_def.get('enabled', True)  # 获取启用状态，默认为True
-
-                sample_points_x_from_config = line_def.get('sample_points_x')  # 从配置中获取 sample_points_x
-                sample_interval_from_config = line_def.get('sample_interval')  # 从配置中获取 sample_interval
-
-                profile_definition_dict = {  # 创建剖面线定义字典
-                    'name': str(line_def['name']),  # 剖面线名称
-                    'start_xy': start_xy,  # 起点坐标
-                    'end_xy': end_xy,  # 终点坐标
-                    'buffer_width': buffer_width  # 缓冲宽度
+                line_def['end_xy']) == 2:
+                try:
+                    start_xy = [float(line_def['start_xy'][0]), float(line_def['start_xy'][1])]
+                    end_xy = [float(line_def['end_xy'][0]), float(line_def['end_xy'][1])]
+                except ValueError:
+                    print(f"警告: 剖面线 '{line_def.get('name', '未命名')}' 的坐标无法转换为浮点数，已跳过。")
+                    continue
+                buffer_width = float(line_def.get('buffer_width', 0.1))
+                is_enabled = line_def.get('enabled', True)
+                sample_points_x_from_config = line_def.get('sample_points_x')
+                sample_interval_from_config = line_def.get('sample_interval')
+                profile_definition_dict = {
+                    'name': str(line_def['name']),
+                    'start_xy': start_xy,
+                    'end_xy': end_xy,
+                    'buffer_width': buffer_width
                 }
-
-                if sample_points_x_from_config is not None:  # 如果配置了 sample_points_x
+                if sample_points_x_from_config is not None:
                     if isinstance(sample_points_x_from_config, list) and \
-                            all(isinstance(pt, (int, float)) for pt in sample_points_x_from_config):  # 检查类型
+                            all(isinstance(pt, (int, float)) for pt in sample_points_x_from_config):
                         profile_definition_dict['sample_points_x'] = [float(pt) for pt in
-                                                                      sample_points_x_from_config]  # 添加到字典
-                    else:  # 类型不正确
+                                                                      sample_points_x_from_config]
+                    else:
                         print(
-                            f"警告: 剖面线 '{line_def['name']}' 的 'sample_points_x' 配置无效 (应为数值列表)，已忽略。")  # 打印警告
-
-                if sample_interval_from_config is not None:  # 如果配置了 sample_interval
-                    try:  # 尝试转换
-                        profile_definition_dict['sample_interval'] = float(sample_interval_from_config)  # 添加到字典
-                    except ValueError:  # 转换失败
+                            f"警告: 剖面线 '{line_def['name']}' 的 'sample_points_x' 配置无效 (应为数值列表)，已忽略。")
+                if sample_interval_from_config is not None:
+                    try:
+                        profile_definition_dict['sample_interval'] = float(sample_interval_from_config)
+                    except ValueError:
                         print(
-                            f"警告: 剖面线 '{line_def['name']}' 的 'sample_interval' 配置无效 (应为数值)，已忽略。")  # 打印警告
+                            f"警告: 剖面线 '{line_def['name']}' 的 'sample_interval' 配置无效 (应为数值)，已忽略。")
+                if is_enabled:
+                    params['profile_output_lines'].append(profile_definition_dict)
+                else:
+                    print(f"  信息: 剖面线 '{line_def['name']}' 已禁用（在配置中设置 enabled: false），跳过。")
+            else:
+                print(f"警告: 无效的剖面线定义格式，已跳过: {line_def}")
+    elif raw_profile_lines is not None:
+        print(f"警告: 'profile_output_lines' 配置项不是一个列表，已忽略。实际类型: {type(raw_profile_lines)}")
 
-                if is_enabled:  # 如果启用
-                    params['profile_output_lines'].append(profile_definition_dict)  # 添加完整的剖面线定义字典
-                else:  # 如果未启用
-                    print(f"  信息: 剖面线 '{line_def['name']}' 已禁用（在配置中设置 enabled: false），跳过。")  # 打印信息
-            else:  # 如果定义无效
-                print(f"警告: 无效的剖面线定义格式，已跳过: {line_def}")  # 打印警告
-    elif raw_profile_lines is not None:  # 如果配置了但不是列表
-        print(f"警告: 'profile_output_lines' 配置项不是一个列表，已忽略。实际类型: {type(raw_profile_lines)}")  # 打印警告
-
-    # --- (在这里添加或修改) 读取内部流量线定义 ---
-    params['internal_flow_lines'] = config_data.get('internal_flow_lines', []) # 从config_data中获取'internal_flow_lines'，如果不存在则返回空列表
-    if not isinstance(params['internal_flow_lines'], list): # 检查获取到的是否为列表
-        print(f"警告: 'internal_flow_lines' 配置项不是一个列表，已忽略。实际类型: {type(params['internal_flow_lines'])}") # 如果不是列表，打印警告
-        params['internal_flow_lines'] = [] # 将其重置为空列表
-    else: # 如果是列表
-        valid_flow_lines = [] # 初始化一个用于存储有效流量线定义的列表
-        for line_def in params['internal_flow_lines']: # 遍历从配置文件中读取的每个流量线定义
+    # 内部流量线定义
+    params['internal_flow_lines'] = config_data.get('internal_flow_lines', [])
+    if not isinstance(params['internal_flow_lines'], list):
+        print(f"警告: 'internal_flow_lines' 配置项不是一个列表，已忽略。实际类型: {type(params['internal_flow_lines'])}")
+        params['internal_flow_lines'] = []
+    else:
+        valid_flow_lines = []
+        for line_def in params['internal_flow_lines']:
             if isinstance(line_def, dict) and \
                'name' in line_def and \
                'poly_node_ids' in line_def and isinstance(line_def['poly_node_ids'], list) and \
-               'direction' in line_def and isinstance(line_def['direction'], list) and len(line_def['direction']) == 2: # 检查定义是否为字典，且包含必要的键和正确的数据类型
+               'direction' in line_def and isinstance(line_def['direction'], list) and len(line_def['direction']) == 2:
                 try:
-                    # 确保 poly_node_ids 是整数列表
-                    poly_ids_int = [int(pid) for pid in line_def['poly_node_ids']] # 将poly_node_ids中的每个元素转换为整数
-                    # 确保 direction 是浮点数列表
-                    direction_float = [float(d_val) for d_val in line_def['direction']] # 将direction中的每个元素转换为浮点数
-                    line_def['poly_node_ids'] = poly_ids_int # 更新line_def中的poly_node_ids
-                    line_def['direction'] = direction_float # 更新line_def中的direction
-                    valid_flow_lines.append(line_def) # 将验证和转换后的流量线定义添加到有效列表中
-                except ValueError: # 如果在转换过程中发生值错误 (例如，无法将字符串转换为整数或浮点数)
-                    print(f"警告: 内部流量线 '{line_def.get('name', '未命名')}' 的 poly_node_ids 或 direction 包含无法转换的数值，已跳过。") # 打印警告
-            else: # 如果流量线定义的格式无效
-                print(f"警告: 无效的内部流量线定义格式，已跳过: {line_def}") # 打印警告
-        params['internal_flow_lines'] = valid_flow_lines # 用验证后的列表更新params中的'internal_flow_lines'
-    # --- 读取内部流量线定义结束 ---
+                    poly_ids_int = [int(pid) for pid in line_def['poly_node_ids']]
+                    direction_float = [float(d_val) for d_val in line_def['direction']]
+                    line_def['poly_node_ids'] = poly_ids_int
+                    line_def['direction'] = direction_float
+                    valid_flow_lines.append(line_def)
+                except ValueError:
+                    print(f"警告: 内部流量线 '{line_def.get('name', '未命名')}' 的 poly_node_ids 或 direction 包含无法转换的数值，已跳过。")
+            else:
+                print(f"警告: 无效的内部流量线定义格式，已跳过: {line_def}")
+        params['internal_flow_lines'] = valid_flow_lines
 
-    # --- 新增：读取内部点源定义 ---
-    params['internal_point_sources'] = config_data.get('internal_point_sources',
-                                                       [])  # 从config_data获取internal_point_sources配置，默认为空列表
-    if not isinstance(params['internal_point_sources'], list):  # 检查获取到的是否为列表
+    # 内部点源定义
+    params['internal_point_sources'] = config_data.get('internal_point_sources', [])
+    if not isinstance(params['internal_point_sources'], list):
         print(
-            f"警告: 'internal_point_sources' 配置项不是一个列表，已忽略。实际类型: {type(params['internal_point_sources'])}")  # 打印警告
-        params['internal_point_sources'] = []  # 将其重置为空列表
-    else:  # 如果是列表
-        valid_point_sources = []  # 初始化有效点源列表
-        for ps_def in params['internal_point_sources']:  # 遍历每个点源定义
+            f"警告: 'internal_point_sources' 配置项不是一个列表，已忽略。实际类型: {type(params['internal_point_sources'])}")
+        params['internal_point_sources'] = []
+    else:
+        valid_point_sources = []
+        for ps_def in params['internal_point_sources']:
             if isinstance(ps_def, dict) and \
                     'name' in ps_def and \
                     'coordinates' in ps_def and isinstance(ps_def['coordinates'], list) and len(
-                ps_def['coordinates']) == 2:  # 检查定义是否为字典且包含必要字段和类型
+                ps_def['coordinates']) == 2:
                 try:
-                    coords = [float(ps_def['coordinates'][0]), float(ps_def['coordinates'][1])]  # 转换坐标为浮点数
-                    ps_def['coordinates'] = coords  # 更新定义中的坐标
-                    # timeseries_column 是可选的，所以这里不做强制检查，C++端会处理
-                    valid_point_sources.append(ps_def)  # 添加到有效列表
-                except ValueError:  # 捕获转换错误
+                    coords = [float(ps_def['coordinates'][0]), float(ps_def['coordinates'][1])]
+                    ps_def['coordinates'] = coords
+                    valid_point_sources.append(ps_def)
+                except ValueError:
                     print(
-                        f"警告: 内部点源 '{ps_def.get('name', '未命名')}' 的 coordinates 包含无法转换的数值，已跳过。")  # 打印警告
-            else:  # 如果格式无效
-                print(f"警告: 无效的内部点源定义格式，已跳过: {ps_def}")  # 打印警告
-        params['internal_point_sources'] = valid_point_sources  # 更新为有效列表
-    # --- 读取内部点源定义结束 ---
+                        f"警告: 内部点源 '{ps_def.get('name', '未命名')}' 的 coordinates 包含无法转换的数值，已跳过。")
+            else:
+                print(f"警告: 无效的内部点源定义格式，已跳过: {ps_def}")
+        params['internal_point_sources'] = valid_point_sources
 
-    return params  # 返回参数字典
+    return params # 返回参数字典
 
 
 
@@ -281,199 +270,218 @@ def load_manning_values_from_file(manning_filepath, num_cells_expected, default_
     return np.full(num_cells_expected, default_manning_val, dtype=float).tolist()  # 返回填充数组
 
 
-def prepare_initial_conditions(params, num_cells_cpp, mesh_cpp_ptr_for_ic,
-                               parsed_poly_data=None):  # parsed_poly_data可能不再直接需要，除非某些IC类型仍依赖它
-    ic_conf_main = params.get('initial_conditions', {})
+def prepare_initial_conditions(params, num_cells_cpp, mesh_cpp_ptr_for_ic):  # 移除了不再使用的 parsed_poly_data
+    ic_conf_main = params.get('initial_conditions', {})  # 获取顶层 initial_conditions 字典
     print(f"DEBUG_PREPARE_IC: Top-level ic_conf loaded = {ic_conf_main}")
 
+    # 尝试从顶层获取全局默认的 hu, hv
     global_default_hu = float(ic_conf_main.get('hu', 0.0))
     global_default_hv = float(ic_conf_main.get('hv', 0.0))
 
-    h_initial = np.zeros(num_cells_cpp, dtype=float)
-    hu_initial_np = np.full(num_cells_cpp, global_default_hu, dtype=float)
-    hv_initial_np = np.full(num_cells_cpp, global_default_hv, dtype=float)
+    h_initial = np.zeros(num_cells_cpp, dtype=float)  # 初始化水深数组
+    hu_initial_np = np.full(num_cells_cpp, global_default_hu, dtype=float)  # 初始化 hu 数组
+    hv_initial_np = np.full(num_cells_cpp, global_default_hv, dtype=float)  # 初始化 hv 数组
 
-    print("  应用初始条件 (基于单元区域属性和配置规则)...")
+    print("  应用初始条件...")
 
-    rules_list = ic_conf_main.get('rules', [])
-    final_default_rule = ic_conf_main.get('default_if_no_match',
-                                          {'type': 'uniform_depth', 'setting_value': 0.0,
-                                           'hu': global_default_hu, 'hv': global_default_hv})
+    rules_list_from_config = ic_conf_main.get('rules')  # 尝试获取 rules 列表
+    default_rule_from_config = ic_conf_main.get('default_if_no_match')  # 尝试获取 default_if_no_match
 
-    if not rules_list:
-        print("    警告: 'initial_conditions.rules' 列表为空或未定义。所有单元将使用 'default_if_no_match'。")
-    else:
-        for i, rule in enumerate(rules_list):
-            print(
-                f"    已定义规则 {i}: 属性={rule.get('region_poly_attribute')}, 类型='{rule.get('type')}', 参数={ {k: v for k, v in rule.items() if k not in ['region_poly_attribute', 'type']} }")
+    # 确定最终的默认规则 (final_default_rule)
+    if default_rule_from_config:
+        final_default_rule = default_rule_from_config
+        print(f"    将使用配置文件中的 'default_if_no_match' 作为最终默认: {final_default_rule}")
+    else:  # 如果配置文件没有 default_if_no_match，则使用硬编码的后备默认
+        final_default_rule = {'type': 'uniform_depth', 'setting_value': 0.0,
+                              'hu': global_default_hu, 'hv': global_default_hv}
+        print(f"    警告: 'default_if_no_match' 未在配置文件中定义。使用硬编码的后备默认 (干底): {final_default_rule}")
 
-    print(
-        f"    最终默认设置 (若无规则匹配): 类型='{final_default_rule['type']}', 值/参数='{ {k: v for k, v in final_default_rule.items() if k != 'type'} }'")
-
-    for i in range(num_cells_cpp):
-        cell = mesh_cpp_ptr_for_ic.get_cell(i)  # 假设返回一个可访问成员的对象
-        cell_attr = mesh_cpp_ptr_for_ic.get_cell_region_attribute(i)
-
-        applied_rule = None
-        for rule in rules_list:
-            rule_attr = rule.get('region_poly_attribute')
-            if rule_attr is not None and abs(cell_attr - float(rule_attr)) < 1e-3:
-                applied_rule = rule
-                break
-
-        if applied_rule is None:
-            applied_rule = final_default_rule
-
-        # --- 从 applied_rule 中提取参数 ---
-        # 注意: 每个类型可能需要不同的参数，这里只是示例
-        # 优先从 applied_rule 获取 hu, hv，如果规则中没有，则使用全局默认
-        current_hu = float(applied_rule.get('hu', global_default_hu))
-        current_hv = float(applied_rule.get('hv', global_default_hv))
-
-        ic_type_from_rule = applied_rule.get('type')
-        # print(f"DEBUG_PREPARE_IC: Cell {i}, Attr {cell_attr}, RuleType '{ic_type_from_rule}'") # 详细调试
-
-        h_val_cell = 0.0  # 在每个类型内部计算
-
-        # --- 在这里嵌入您所有的初始条件类型判断逻辑 ---
-        # --- 您需要将 applied_rule 作为这些逻辑的参数来源 ---
-
-        if ic_type_from_rule == 'uniform_elevation':
-            setting_value = applied_rule.get('setting_value')
-            if setting_value is not None:
-                wse = float(setting_value)
-                h_val_cell = max(0.0, wse - cell.z_bed_centroid)
+    # 确定要应用的规则列表 (active_rules_list)
+    active_rules_list = []
+    if rules_list_from_config:  # 如果配置文件中有 'rules'
+        active_rules_list = rules_list_from_config
+        print(f"    将处理 {len(active_rules_list)} 条来自 'initial_conditions.rules' 的规则。")
+        for i_rule, rule_cfg in enumerate(active_rules_list):
+            print(f"      Rule {i_rule}: {rule_cfg}")
+    elif default_rule_from_config:  # 如果没有 'rules' 但有 'default_if_no_match'
+        # 将 default_if_no_match 视为唯一规则应用于所有单元（如果它不包含 region_poly_attribute）
+        # 或者它将作为下面循环中匹配失败时的后备
+        print(f"    没有 'initial_conditions.rules'。'default_if_no_match' ({final_default_rule}) 将作为主要或后备规则。")
+        # 在这种情况下，下面的循环如果找不到匹配的区域属性，就会退到 final_default_rule
+        # 如果 final_default_rule 自身没有 region_poly_attribute，它将普适于那些没有被其他规则覆盖的单元
+    else:  # 如果既没有 'rules' 也没有 'default_if_no_match'，尝试使用顶层简单配置
+        print("    没有 'initial_conditions.rules' 或 'default_if_no_match'。尝试顶层简单配置...")
+        simple_ic_type = ic_conf_main.get('type')
+        simple_setting_value = None
+        # 为简单类型提取参数
+        if simple_ic_type == 'uniform_depth':
+            simple_setting_value = ic_conf_main.get('water_depth')
+        elif simple_ic_type == 'uniform_elevation':
+            simple_setting_value = ic_conf_main.get('water_surface_elevation')
+        elif simple_ic_type == 'dam_break_custom':  # 支持 dam_break_custom 作为顶层简单配置
+            # 将整个 ic_conf_main 视为规则字典
+            # 但确保 'type' 键存在，并且其他 dam_break_custom 需要的键也存在于 ic_conf_main 中
+            if all(key in ic_conf_main for key in
+                   ['dam_position_x', 'upstream_setting_type', 'upstream_setting_value', 'downstream_setting_type',
+                    'downstream_setting_value']):
+                # final_default_rule 会被构造成这个顶层配置
+                # active_rules_list 将包含这个构造出的规则
+                pass  # 下面的 final_default_rule 构建会处理
             else:
-                print(f"警告: 单元 {i} 规则类型 'uniform_elevation' 缺少 'setting_value'。应用最终默认。")
-                # 应用最终默认的水深计算逻辑
-                if final_default_rule.get('type') == 'uniform_depth':
-                    h_val_cell = max(0.0, float(final_default_rule.get('setting_value', 0.0)))
-                # (可以添加更多对final_default_rule类型的处理)
+                simple_ic_type = None  # 标记为无效的简单配置
 
+        if simple_ic_type:
+            constructed_rule = {'type': simple_ic_type, 'hu': global_default_hu, 'hv': global_default_hv}
+            if simple_setting_value is not None:  # 对于 uniform_depth/elevation
+                constructed_rule['setting_value'] = float(simple_setting_value)
+            elif simple_ic_type == 'dam_break_custom':  # 对于顶层dam_break
+                for key in ['dam_position_x', 'upstream_setting_type', 'upstream_setting_value',
+                            'upstream_reference_bed_elevation', 'downstream_setting_type',
+                            'downstream_setting_value', 'downstream_reference_bed_elevation']:
+                    if key in ic_conf_main:
+                        # 尝试转换为 float，如果适用
+                        try:
+                            constructed_rule[key] = float(ic_conf_main[key]) if isinstance(ic_conf_main[key],
+                                                                                           (int, float,
+                                                                                            str)) and key.endswith(
+                                ('_value', '_x', '_elevation')) else ic_conf_main[key]
+                        except ValueError:
+                            constructed_rule[key] = ic_conf_main[key]  # 保留原始字符串如果不能转为float
 
-        elif ic_type_from_rule == 'uniform_depth':
-            setting_value = applied_rule.get('setting_value')
-            if setting_value is not None:
-                depth = float(setting_value)
-                h_val_cell = max(0.0, depth)
+            final_default_rule = constructed_rule  # 这个简单配置成为默认
+            active_rules_list = [final_default_rule]  # 并且是唯一要处理的规则
+            print(f"    使用顶层简单配置作为唯一规则: {final_default_rule}")
+        else:
+            # 如果连简单配置都没有或无效，则 active_rules_list 为空，所有单元都将使用硬编码的 final_default_rule
+            print(f"    警告: 未找到有效的顶层简单初始条件配置。所有单元将使用最终默认规则: {final_default_rule}")
+
+    for i in range(num_cells_cpp):  # 遍历所有单元
+        cell = mesh_cpp_ptr_for_ic.get_cell(i)  # 获取单元对象
+        cell_attr_val = mesh_cpp_ptr_for_ic.get_cell_region_attribute(i)  # 获取单元的区域属性
+
+        applied_rule_for_cell = None  # 初始化当前单元应用的规则
+
+        # 尝试从 active_rules_list 中通过 region_poly_attribute 匹配规则
+        if active_rules_list:
+            for rule_item in active_rules_list:
+                rule_region_attr_str = rule_item.get('region_poly_attribute')
+                if rule_region_attr_str is not None:  # 如果规则指定了区域属性
+                    try:
+                        if abs(cell_attr_val - float(rule_region_attr_str)) < 1e-3:
+                            applied_rule_for_cell = rule_item
+                            break
+                    except (ValueError, TypeError):
+                        print(f"警告: 规则中的 region_poly_attribute '{rule_region_attr_str}' 无法转换为浮点数。")
+                elif len(
+                        active_rules_list) == 1 and rule_item == final_default_rule:  # 如果是唯一的 "普适" 规则 (例如由简单配置或无rules的default_if_no_match转化而来)
+                    applied_rule_for_cell = rule_item
+                    break
+
+        if applied_rule_for_cell is None:  # 如果没有通过区域属性匹配上，或者 active_rules_list 为空
+            applied_rule_for_cell = final_default_rule  # 则使用最终的默认规则
+
+        # 从选定的规则中获取参数
+        current_hu_val = float(applied_rule_for_cell.get('hu', global_default_hu))
+        current_hv_val = float(applied_rule_for_cell.get('hv', global_default_hv))
+        ic_type_from_rule_val = applied_rule_for_cell.get('type')
+
+        h_val_cell_calc = 0.0  # 初始化当前单元计算得到的水深
+
+        # --- 根据规则类型计算水深 ---
+        if ic_type_from_rule_val == 'uniform_elevation':
+            setting_val = applied_rule_for_cell.get('setting_value')
+            if setting_val is not None:
+                wse = float(setting_val)
+                h_val_cell_calc = max(0.0, wse - cell.z_bed_centroid)
             else:
-                print(f"警告: 单元 {i} 规则类型 'uniform_depth' 缺少 'setting_value'。应用最终默认。")
-                if final_default_rule.get('type') == 'uniform_depth':
-                    h_val_cell = max(0.0, float(final_default_rule.get('setting_value', 0.0)))
+                print(f"警告: 单元 {i} 规则类型 'uniform_elevation' 缺少 'setting_value'。水深设为0。")
 
+        elif ic_type_from_rule_val == 'uniform_depth':
+            setting_val = applied_rule_for_cell.get('setting_value')
+            if setting_val is not None:
+                depth = float(setting_val)
+                h_val_cell_calc = max(0.0, depth)
+            else:
+                print(f"警告: 单元 {i} 规则类型 'uniform_depth' 缺少 'setting_value'。水深设为0。")
 
-        elif ic_type_from_rule == 'linear_wse_slope':
+        elif ic_type_from_rule_val == 'linear_wse_slope':
             try:
-                up_wse = float(applied_rule.get('upstream_wse'))
-                down_wse = float(applied_rule.get('downstream_wse'))
-                start_coord_val = float(applied_rule.get('river_start_coord'))
-                end_coord_val = float(applied_rule.get('river_end_coord'))
-                axis_str = applied_rule.get('coord_axis_for_slope', 'x')
+                up_wse = float(applied_rule_for_cell.get('upstream_wse'))
+                down_wse = float(applied_rule_for_cell.get('downstream_wse'))
+                start_coord_val = float(applied_rule_for_cell.get('river_start_coord'))
+                end_coord_val = float(applied_rule_for_cell.get('river_end_coord'))
+                axis_str = applied_rule_for_cell.get('coord_axis_for_slope', 'x').lower()
                 axis_idx = 0 if axis_str == 'x' else 1
 
                 total_len_coord = end_coord_val - start_coord_val
-                if abs(total_len_coord) < 1e-6:
+                if abs(total_len_coord) < 1e-6:  # 避免除以零
                     target_wse = (up_wse + down_wse) / 2.0
                 else:
-                    current_coord_val = cell.centroid[axis_idx]
-                    ratio = (current_coord_val - start_coord_val) / total_len_coord
-                    if ratio < 0:
+                    current_coord_val_cell = cell.centroid[axis_idx]
+                    ratio = (current_coord_val_cell - start_coord_val) / total_len_coord
+                    # 线性插值，并处理超出范围的情况
+                    if ratio <= 0:
                         target_wse = up_wse
-                    elif ratio > 1:
+                    elif ratio >= 1:
                         target_wse = down_wse
                     else:
                         target_wse = up_wse + ratio * (down_wse - up_wse)
-                h_val_cell = max(0.0, target_wse - cell.z_bed_centroid)
-            except Exception as e:
-                print(f"警告: 单元 {i} 规则类型 'linear_wse_slope' 参数配置错误: {e}。应用最终默认。")
-                if final_default_rule.get('type') == 'uniform_depth':
-                    h_val_cell = max(0.0, float(final_default_rule.get('setting_value', 0.0)))
+                h_val_cell_calc = max(0.0, target_wse - cell.z_bed_centroid)
+            except Exception as e_slope:  # 捕获参数缺失或类型错误
+                print(f"警告: 单元 {i} 应用 'linear_wse_slope' 规则时出错: {e_slope}。水深设为0。")
 
+        elif ic_type_from_rule_val == 'dam_break_custom':
+            try:
+                dam_pos_x_val = float(applied_rule_for_cell.get('dam_position_x'))
 
-        elif ic_type_from_rule == 'dam_break_custom':
-            # 从 applied_rule 获取参数
-            dam_pos_x = float(applied_rule.get('dam_position_x', 0.0))
-            upstream_type = applied_rule.get('upstream_setting_type', 'elevation').lower()
-            upstream_value = float(applied_rule.get('upstream_setting_value', 0.0))
-            # ... (获取所有 dam_break_custom 需要的参数，如 upstream_reference_bed_elevation 等)
-            # ... (然后是您已有的计算 h_val_cell 的逻辑)
-            # (为简洁，这里省略了完整的 dam_break_custom 内部计算逻辑，您需要从原函数复制并调整参数来源)
-            # 例如:
-            apply_direct_depth_upstream = False
-            upstream_target_eta_for_calc = 0.0
-            upstream_direct_depth_for_calc = 0.0
-            if upstream_type == 'elevation':
-                upstream_target_eta_for_calc = upstream_value
-            elif upstream_type == 'depth':
-                if 'upstream_reference_bed_elevation' in applied_rule:
-                    upstream_target_eta_for_calc = float(
-                        applied_rule.get('upstream_reference_bed_elevation')) + upstream_value
+                up_type = applied_rule_for_cell.get('upstream_setting_type', 'elevation').lower()
+                up_val = float(applied_rule_for_cell.get('upstream_setting_value'))
+                up_ref_bed_str = applied_rule_for_cell.get('upstream_reference_bed_elevation')
+                up_ref_bed = float(up_ref_bed_str) if up_ref_bed_str is not None else None
+
+                down_type = applied_rule_for_cell.get('downstream_setting_type', 'depth').lower()
+                down_val = float(applied_rule_for_cell.get('downstream_setting_value'))
+                down_ref_bed_str = applied_rule_for_cell.get('downstream_reference_bed_elevation')
+                down_ref_bed = float(down_ref_bed_str) if down_ref_bed_str is not None else None
+
+                # 计算上游水深
+                if cell.centroid[0] < dam_pos_x_val:
+                    if up_type == 'elevation':
+                        h_val_cell_calc = max(0.0, up_val - cell.z_bed_centroid)
+                    elif up_type == 'depth':
+                        if up_ref_bed is not None:  # 基于参考底高程的水深
+                            h_val_cell_calc = max(0.0, (up_ref_bed + up_val) - cell.z_bed_centroid)
+                        else:  # 直接水深
+                            h_val_cell_calc = max(0.0, up_val)
+                # 计算下游水深
                 else:
-                    upstream_direct_depth_for_calc = upstream_value
-                    apply_direct_depth_upstream = True
-            # ... (类似地处理下游 downstream_... ) ...
-            downstream_type = applied_rule.get('downstream_setting_type', 'depth').lower()
-            downstream_value = float(applied_rule.get('downstream_setting_value', 0.0))
-            apply_direct_depth_downstream = False
-            downstream_target_eta_for_calc = 0.0
-            downstream_direct_depth_for_calc = 0.0
-            if downstream_type == 'elevation':
-                downstream_target_eta_for_calc = downstream_value
-            elif downstream_type == 'depth':
-                if 'downstream_reference_bed_elevation' in applied_rule:
-                    downstream_target_eta_for_calc = float(
-                        applied_rule.get('downstream_reference_bed_elevation')) + downstream_value
-                else:
-                    downstream_direct_depth_for_calc = downstream_value
-                    apply_direct_depth_downstream = True
+                    if down_type == 'elevation':
+                        h_val_cell_calc = max(0.0, down_val - cell.z_bed_centroid)
+                    elif down_type == 'depth':
+                        if down_ref_bed is not None:  # 基于参考底高程的水深
+                            h_val_cell_calc = max(0.0, (down_ref_bed + down_val) - cell.z_bed_centroid)
+                        else:  # 直接水深
+                            h_val_cell_calc = max(0.0, down_val)
+            except Exception as e_dam:  # 捕获参数缺失或类型错误
+                print(f"警告: 单元 {i} 应用 'dam_break_custom' 规则时出错: {e_dam}。水深设为0。")
 
-            if cell.centroid[0] < dam_pos_x:  # 上游
-                if apply_direct_depth_upstream:
-                    h_val_cell = max(0.0, upstream_direct_depth_for_calc)
-                else:
-                    h_val_cell = max(0.0, upstream_target_eta_for_calc - cell.z_bed_centroid)
-            else:  # 下游
-                if apply_direct_depth_downstream:
-                    h_val_cell = max(0.0, downstream_direct_depth_for_calc)
-                else:
-                    h_val_cell = max(0.0, downstream_target_eta_for_calc - cell.z_bed_centroid)
+        # ... (可以继续添加其他 elif ic_type_from_rule_val == '...' )
 
+        else:  # 如果规则类型未被以上任何 if/elif 处理
+            print(f"警告: 单元 {i} (属性 {cell_attr_val:.1f}) 的规则类型 '{ic_type_from_rule_val}' 未被实现。水深设为0。")
+            h_val_cell_calc = 0.0  # 绝对后备
 
-        # --- 在此 elif 块中添加您其他的 initial_condition_type ---
-        # 例如: 'custom_L_shaped_dam_break', '2d_partial_dam_break', 等等
-        # 确保每个类型的逻辑都从 applied_rule 中获取其参数
+        h_initial[i] = h_val_cell_calc  # 设置初始水深
+        hu_initial_np[i] = current_hu_val  # 设置初始hu
+        hv_initial_np[i] = current_hv_val  # 设置初始hv
 
-        elif ic_type_from_rule == 'custom_surface_function':
-            surface_params = applied_rule.get('surface_params', {})
-            base_eta = float(surface_params.get('base_elevation', 0.0))
-            slope_x = float(surface_params.get('slope_x', 0.0))
-            slope_y = float(surface_params.get('slope_y', 0.0))
-            eta_cell = base_eta + slope_x * cell.centroid[0] + slope_y * cell.centroid[1]
-            h_val_cell = max(0.0, eta_cell - cell.z_bed_centroid)
-
-        else:  # 如果类型未被以上任何 if/elif 处理
-            print(f"警告: 单元 {i} (属性 {cell_attr:.1f}) 的规则类型 '{ic_type_from_rule}' 未被实现。应用最终默认。")
-            # 应用最终默认的水深计算逻辑
-            if final_default_rule.get('type') == 'uniform_depth':
-                h_val_cell = max(0.0, float(final_default_rule.get('setting_value', 0.0)))
-            elif final_default_rule.get('type') == 'uniform_elevation':
-                h_val_cell = max(0.0, float(final_default_rule.get('setting_value', 0.0)) - cell.z_bed_centroid)
-            # ... (可以添加更多对final_default_rule类型的处理)
-            else:
-                h_val_cell = 0.0  # 绝对后备
-
-        h_initial[i] = h_val_cell
-        hu_initial_np[i] = current_hu  # 使用从规则或全局默认获取的hu
-        hv_initial_np[i] = current_hv  # 使用从规则或全局默认获取的hv
-
-    num_dry_cells = np.sum(h_initial < params.get('min_depth', 1e-6))  # min_depth 可能更合适
-    print(f"  初始条件设置完毕。基于规则，计算得到 {num_dry_cells} / {num_cells_cpp} 个干单元或水深极浅单元。")
+    num_dry_cells_calc = np.sum(h_initial < params.get('min_depth', 1e-6))
+    print(f"  初始条件设置完毕。基于规则，计算得到 {num_dry_cells_calc} / {num_cells_cpp} 个干单元或水深极浅单元。")
 
     return np.column_stack((h_initial, hu_initial_np, hv_initial_np))
 
 
 def prepare_boundary_conditions_for_cpp(params):
-    # ... (调试打印 hydro_model_cpp.BoundaryType_cpp 成员的代码可以保留或删除) ...
 
     bc_defs_cpp = {}
     py_def_dict_top = params.get('boundary_definitions_py', {})
@@ -487,7 +495,7 @@ def prepare_boundary_conditions_for_cpp(params):
             type_str_raw = py_def_item.get('type', 'WALL')
 
             # ***** 关键修复：显式转换为 str 类型 *****
-            type_str_from_config = str(type_str_raw)
+            type_str_from_config = str(type_str_raw).upper() # 转换为大写
 
             print(
                 f"DEBUG_BC_PREP: Marker {marker_str}, Type from config (raw): '{type_str_raw}' (type: {type(type_str_raw)}), Converted to str: '{type_str_from_config}' (type: {type(type_str_from_config)})")  # 详细调试
@@ -1005,314 +1013,298 @@ if __name__ == "__main__":  # 主程序入口
     output_counter = 0  # 初始化输出计数器
     next_output_time = model_core.get_current_time()  # 初始化下一个输出时间
     simulation_active = True  # 初始化模拟活动标志
-    while simulation_active:  # 当模拟活动时循环
-        current_t_cpp = model_core.get_current_time()  # 获取当前C++时间
-        if current_t_cpp >= next_output_time - NUMERICAL_EPSILON or output_counter == 0:  # 第一次也输出
-            # --- 新增：计算并打印时间 ---
-            current_wall_time_py = time.time()  # 获取当前墙上时间
-            time_since_last_vtk_py = current_wall_time_py - last_vtk_save_time_py  # 计算自上次VTK保存以来的用时
-            total_elapsed_time_py = current_wall_time_py - overall_start_time_py  # 计算总的脚本运行时间
+    while simulation_active:
+        current_t_cpp = model_core.get_current_time()
+        if current_t_cpp >= next_output_time - NUMERICAL_EPSILON or output_counter == 0:
+            current_wall_time_py = time.time()
+            time_since_last_vtk_py = current_wall_time_py - last_vtk_save_time_py
+            total_elapsed_time_py = current_wall_time_py - overall_start_time_py
 
-            # 只有在第一次输出之后才打印单步用时，避免除零或不准确
-            if output_counter > 0:  # 如果不是第一次输出
+            if output_counter > 0:
+                print(f"  Python: Output at t = {current_t_cpp:.3f} s (C++ step = {model_core.get_step_count()})")
+                print(f"    Time for this output interval: {time_since_last_vtk_py:.2f} s (Python wall time)")
+            else:
                 print(
-                    f"  Python: Output at t = {current_t_cpp:.3f} s (C++ step = {model_core.get_step_count()})")  # 打印输出信息
-                print(
-                    f"    Time for this output interval: {time_since_last_vtk_py:.2f} s (Python wall time)")  # 打印本次输出间隔用时
-            else:  # 如果是第一次输出
-                print(
-                    f"  Python: Initial Output at t = {current_t_cpp:.3f} s (C++ step = {model_core.get_step_count()})")  # 打印初始输出信息
-            print(f"    Total elapsed simulation time: {total_elapsed_time_py:.2f} s (Python wall time)")  # 打印总用时
-            last_vtk_save_time_py = current_wall_time_py  # 更新上次VTK保存时间点
-            # --- 时间打印结束 ---
+                    f"  Python: Initial Output at t = {current_t_cpp:.3f} s (C++ step = {model_core.get_step_count()})")
+            print(f"    Total elapsed simulation time: {total_elapsed_time_py:.2f} s (Python wall time)")
+            last_vtk_save_time_py = current_wall_time_py
 
-            U_current_py = model_core.get_U_state_all_py()  # 获取当前守恒量
-            eta_current_py = model_core.get_eta_previous_py()  # 获取当前水位
-            h_current = U_current_py[:, 0]  # 获取水深
-            hu_current = U_current_py[:, 1]  # 获取hu
-            hv_current = U_current_py[:, 2]  # 获取hv
+            U_current_py = model_core.get_U_state_all_py()
+            eta_current_py = model_core.get_eta_previous_py()
+            h_current = U_current_py[:, 0]
+            hu_current = U_current_py[:, 1]
+            hv_current = U_current_py[:, 2]
 
             u_current = np.divide(hu_current, h_current, out=np.zeros_like(hu_current),
-                                  where=h_current > params['min_depth'] / 10.0)  # 计算u速度
+                                  where=h_current > params['min_depth'] / 10.0)
             v_current = np.divide(hv_current, h_current, out=np.zeros_like(hv_current),
-                                  where=h_current > params['min_depth'] / 10.0)  # 计算v速度
-            velocity_magnitude = np.sqrt(u_current ** 2 + v_current ** 2)  # 计算流速大小
-            # 计算弗劳德数
-            # 避免除以零或在干单元计算 (h_current <= min_depth_for_fr_calc)
-            min_depth_for_fr_calc = params.get('min_depth', 1e-6) / 10.0  # 使用一个比min_depth更小的值作为计算Fr的阈值
-            # 或者直接用 params['min_depth']，但要确保分母不为零
-            sqrt_gh = np.sqrt(params['gravity'] * h_current)  # 计算 sqrt(g*h)
+                                  where=h_current > params['min_depth'] / 10.0)
+            velocity_magnitude = np.sqrt(u_current ** 2 + v_current ** 2)
+            min_depth_for_fr_calc = params.get('min_depth', 1e-6) / 10.0
+            sqrt_gh = np.sqrt(params['gravity'] * h_current)
             froude_number = np.divide(velocity_magnitude, sqrt_gh,
                                       out=np.zeros_like(velocity_magnitude),
-                                      where=h_current > min_depth_for_fr_calc)  # 只在湿单元计算，干单元Fr为0
-            # --- 弗劳德数计算结束 ---
-            # --- (新增) 收集剖面线数据 ---
-            for profile_name, collector in profile_data_collectors.items():  # 遍历剖面线数据收集器
-                if not collector["time_data"] or abs(
-                        collector["time_data"][-1] - current_t_cpp) > NUMERICAL_EPSILON / 10.0:
-                    collector["time_data"].append(current_t_cpp)  # 添加最终时间
-                    # current_profile_etas = eta_current_py[collector["cell_ids"]]  # 获取剖面线上单元的水位
-                    # collector["time_data"].append(current_t_cpp)  # 添加当前时间
-                    # collector["eta_data"].append(current_profile_etas.tolist())  # 添加水位数据
-                    # --- 新的收集逻辑 ---
-                    selected_cell_ids = collector["cell_ids"]  # 获取已选定的剖面线单元ID
-                    collector["time_data"].append(current_t_cpp)  # 添加当前时间
-                    collector["eta_data"].append(eta_current_py[selected_cell_ids].tolist())  # 添加水位数据
-                    collector["h_data"].append(h_current[selected_cell_ids].tolist())  # 添加水深数据
-                    collector["u_data"].append(u_current[selected_cell_ids].tolist())  # 添加u速度数据
-                    collector["v_data"].append(v_current[selected_cell_ids].tolist())  # 添加v速度数据
-                    collector["fr_data"].append(froude_number[selected_cell_ids].tolist())  # 新增：收集剖面线上的弗劳德数
-            # --- 结束剖面线数据收集 ---
+                                      where=h_current > min_depth_for_fr_calc)
 
+            # --- (修改后) 收集剖面线数据 ---
+            for profile_name, collector in profile_data_collectors.items():
+                selected_cell_ids = collector["cell_ids"]
+                # 只有当剖面线有单元时才记录数据
+                if selected_cell_ids:
+                    # 避免重复记录完全相同的时间点的数据 (可以根据需要调整此逻辑)
+                    if not collector["time_data"] or abs(
+                            collector["time_data"][-1] - current_t_cpp) > NUMERICAL_EPSILON / 100.0:
+                        collector["time_data"].append(current_t_cpp)
+                        collector["eta_data"].append(eta_current_py[selected_cell_ids].tolist())
+                        collector["h_data"].append(h_current[selected_cell_ids].tolist())
+                        collector["u_data"].append(u_current[selected_cell_ids].tolist())
+                        collector["v_data"].append(v_current[selected_cell_ids].tolist())
+                        collector["fr_data"].append(froude_number[selected_cell_ids].tolist())
+                # 如果 selected_cell_ids 为空，则不为该剖面线记录任何数据
 
-            u_current = np.divide(hu_current, h_current, out=np.zeros_like(hu_current),
-                                  where=h_current > params['min_depth'] / 10.0)  # 计算u速度
-            v_current = np.divide(hv_current, h_current, out=np.zeros_like(hv_current),
-                                  where=h_current > params['min_depth'] / 10.0)  # 计算v速度
-            velocity_magnitude = np.sqrt(u_current ** 2 + v_current ** 2)  # 计算流速大小
+            cell_data_for_vtk = {
+                "water_depth": h_current, "eta": eta_current_py,
+                "velocity_u": u_current, "velocity_v": v_current,
+                "velocity_magnitude": velocity_magnitude, "froude_number": froude_number
+            }
+            vtk_filepath = os.path.join(vtk_output_dir, f"results_t{output_counter:04d}.vtu")
+            save_results_to_vtk(vtk_filepath, points_for_vtk, cells_for_vtk, cell_data_for_vtk)
 
-            cell_data_for_vtk = {  # 准备VTK单元数据
-                "water_depth": h_current,  # 水深
-                "eta": eta_current_py,  # 水位
-                "velocity_u": u_current,  # u速度
-                "velocity_v": v_current,  # v速度
-                "velocity_magnitude": velocity_magnitude,  # 流速大小
-                "froude_number": froude_number  # 新增：弗劳德数
-            }  # 结束准备
-            vtk_filepath = os.path.join(vtk_output_dir, f"results_t{output_counter:04d}.vtu")  # 构建VTK文件路径
-            save_results_to_vtk(vtk_filepath, points_for_vtk, cells_for_vtk, cell_data_for_vtk)  # 保存结果到VTK文件
+            output_counter += 1
+            if current_t_cpp < params['total_time'] - NUMERICAL_EPSILON:
+                next_output_time += params['output_dt']
+                if next_output_time > params['total_time'] + NUMERICAL_EPSILON:
+                    next_output_time = params['total_time']
+            else:
+                pass
 
-            output_counter += 1  # 增加输出计数器
-            if current_t_cpp < params['total_time'] - NUMERICAL_EPSILON:  # 如果当前时间小于总时间
-                next_output_time += params['output_dt']  # 更新下一个输出时间
-                if next_output_time > params['total_time'] + NUMERICAL_EPSILON:  # 如果超过总时间
-                    next_output_time = params['total_time']  # 设为总时间
-            else:  # 如果已达到或超过总时间
-                pass  # 不再增加 next_output_time
+        simulation_active = model_core.advance_one_step()
+        if model_core.is_simulation_finished() and simulation_active:
+            simulation_active = False
 
-        simulation_active = model_core.advance_one_step()  # 执行一步C++模拟并更新活动标志
-        if model_core.is_simulation_finished() and simulation_active:  # 如果C++认为结束了但Python循环还想继续
-            simulation_active = False  # 强制Python循环结束
+        # --- 确保在总时间点进行最后一次输出 ---
+    current_t_cpp = model_core.get_current_time()
+    current_wall_time_py = time.time()
+    time_since_last_vtk_py = current_wall_time_py - last_vtk_save_time_py
+    total_elapsed_time_py = current_wall_time_py - overall_start_time_py
+    print(f"  Python: Final Output at t = {current_t_cpp:.3f} s (C++ step = {model_core.get_step_count()})")
+    print(f"    Time for this final output interval: {time_since_last_vtk_py:.2f} s (Python wall time)")
+    print(f"    Total elapsed simulation time (end): {total_elapsed_time_py:.2f} s (Python wall time)")
 
-    # --- 确保在总时间点进行最后一次输出 ---
-    current_t_cpp = model_core.get_current_time()  # 获取最终C++时间
-    # --- 新增：计算并打印最后一次的时间 ---
-    current_wall_time_py = time.time()  # 获取当前墙上时间
-    time_since_last_vtk_py = current_wall_time_py - last_vtk_save_time_py  # 计算自上次VTK保存以来的用时
-    total_elapsed_time_py = current_wall_time_py - overall_start_time_py  # 计算总的脚本运行时间
-    print(
-        f"  Python: Final Output at t = {current_t_cpp:.3f} s (C++ step = {model_core.get_step_count()})")  # 打印最终输出信息
-    print(
-        f"    Time for this final output interval: {time_since_last_vtk_py:.2f} s (Python wall time)")  # 打印本次输出间隔用时
-    print(f"    Total elapsed simulation time (end): {total_elapsed_time_py:.2f} s (Python wall time)")  # 打印总用时
-    # --- 时间打印结束 ---
+    U_final_py = model_core.get_U_state_all_py()
+    eta_final_py = model_core.get_eta_previous_py()
 
-    U_final_py = model_core.get_U_state_all_py()  # 获取最终守恒量
-    eta_final_py = model_core.get_eta_previous_py()  # 获取最终水位
-
-    # --- (新增) 收集最后时刻的剖面线数据 ---
-    for profile_name, collector in profile_data_collectors.items():  # 遍历剖面线数据收集器
-        if collector["cell_ids"]:  # 如果该剖面线有单元
+    # --- (修改后) 收集最后时刻的剖面线数据 ---
+    for profile_name, collector in profile_data_collectors.items():
+        selected_cell_ids = collector["cell_ids"]
+        if selected_cell_ids:  # 仅当剖面线实际捕获到单元时才添加数据
+            # 避免重复记录完全相同的时间点的数据
             if not collector["time_data"] or abs(
-                    collector["time_data"][-1] - current_t_cpp) > NUMERICAL_EPSILON / 10.0:  # 如果时间不重复
-                final_profile_etas = eta_final_py[collector["cell_ids"]]  # 获取最终剖面线水位
-                collector["time_data"].append(current_t_cpp)  # 添加最终时间
-                collector["eta_data"].append(final_profile_etas.tolist())  # 添加最终水位数据
-    # --- 结束最后时刻剖面线数据收集 ---
+                    collector["time_data"][-1] - current_t_cpp) > NUMERICAL_EPSILON / 100.0:
+                collector["time_data"].append(current_t_cpp)
+                # 需要从 U_final_py 和 eta_final_py 重新计算最终的 h, u, v, fr
+                h_final_prof = U_final_py[selected_cell_ids, 0]
+                hu_final_prof = U_final_py[selected_cell_ids, 1]
+                hv_final_prof = U_final_py[selected_cell_ids, 2]
+                u_final_prof = np.divide(hu_final_prof, h_final_prof, out=np.zeros_like(hu_final_prof),
+                                         where=h_final_prof > params['min_depth'] / 10.0)
+                v_final_prof = np.divide(hv_final_prof, h_final_prof, out=np.zeros_like(hv_final_prof),
+                                         where=h_final_prof > params['min_depth'] / 10.0)
+                vel_mag_final_prof = np.sqrt(u_final_prof ** 2 + v_final_prof ** 2)
+                sqrt_gh_final_prof = np.sqrt(params['gravity'] * h_final_prof)
+                fr_final_prof = np.divide(vel_mag_final_prof, sqrt_gh_final_prof,
+                                          out=np.zeros_like(vel_mag_final_prof),
+                                          where=h_final_prof > min_depth_for_fr_calc)
 
-    h_final = U_final_py[:, 0]  # 获取最终水深
-    hu_final = U_final_py[:, 1]  # 获取最终hu
-    hv_final = U_final_py[:, 2]  # 获取最终hv
+                collector["eta_data"].append(eta_final_py[selected_cell_ids].tolist())
+                collector["h_data"].append(h_final_prof.tolist())
+                collector["u_data"].append(u_final_prof.tolist())
+                collector["v_data"].append(v_final_prof.tolist())
+                collector["fr_data"].append(fr_final_prof.tolist())
+
+    # ... (VTK保存和结束语不变) ...
+    h_final = U_final_py[:, 0]
+    hu_final = U_final_py[:, 1]
+    hv_final = U_final_py[:, 2]
     u_final = np.divide(hu_final, h_final, out=np.zeros_like(hu_final),
-                        where=h_final > params['min_depth'] / 10.0)  # 计算最终u速度
+                        where=h_final > params['min_depth'] / 10.0)
     v_final = np.divide(hv_final, h_final, out=np.zeros_like(hv_final),
-                        where=h_final > params['min_depth'] / 10.0)  # 计算最终v速度
-    velocity_magnitude_final = np.sqrt(u_final ** 2 + v_final ** 2)  # 计算最终流速大小
-    # --- (在其后添加) ---
+                        where=h_final > params['min_depth'] / 10.0)
+    velocity_magnitude_final = np.sqrt(u_final ** 2 + v_final ** 2)
     sqrt_gh_final = np.sqrt(params['gravity'] * h_final)
     froude_number_final = np.divide(velocity_magnitude_final, sqrt_gh_final,
                                     out=np.zeros_like(velocity_magnitude_final),
-                                    where=h_final > min_depth_for_fr_calc)  # 使用之前定义的阈值
-    # --- 弗劳德数计算结束 ---
+                                    where=h_final > min_depth_for_fr_calc)
 
-    final_cell_data_for_vtk = {  # 准备最终VTK单元数据
-        "water_depth": h_final,  # 水深
-        "eta": eta_final_py,  # 水位
-        "velocity_u": u_final,  # u速度
-        "velocity_v": v_final,  # v速度
-        "velocity_magnitude": velocity_magnitude_final,  # 流速大小
-        "froude_number": froude_number_final  # 新增：最终时刻的弗劳德数
-    }  # 结束准备
-    vtk_filepath_final = os.path.join(vtk_output_dir, f"results_t{output_counter:04d}_final.vtu")  # 构建最终VTK文件路径
-    save_results_to_vtk(vtk_filepath_final, points_for_vtk, cells_for_vtk, final_cell_data_for_vtk)  # 保存最终结果到VTK文件
+    final_cell_data_for_vtk = {
+        "water_depth": h_final, "eta": eta_final_py,
+        "velocity_u": u_final, "velocity_v": v_final,
+        "velocity_magnitude": velocity_magnitude_final, "froude_number": froude_number_final
+    }
+    vtk_filepath_final = os.path.join(vtk_output_dir, f"results_t{output_counter:04d}_final.vtu")
+    save_results_to_vtk(vtk_filepath_final, points_for_vtk, cells_for_vtk, final_cell_data_for_vtk)
 
-    print("Python: C++ simulation finished.")  # 打印模拟结束信息
-    print(f"  Final time: {model_core.get_current_time():.3f} s")  # 打印最终时间
-    print(f"  Total steps: {model_core.get_step_count()}")  # 打印总步数
+    print("Python: C++ simulation finished.")
+    print(f"  Final time: {model_core.get_current_time():.3f} s")
+    print(f"  Total steps: {model_core.get_step_count()}")
 
-    # --- (新增) 保存剖面线数据到CSV文件和绘图 ---
-    if profile_data_collectors:  # 仅当有剖面线数据时才执行
-        profile_output_dir = os.path.join(params['output_directory'], "profile_data")  # 定义剖面线数据输出目录
-        os.makedirs(profile_output_dir, exist_ok=True)  # 创建目录
-        print(f"\n保存剖面线数据到: {os.path.abspath(profile_output_dir)}")  # 打印保存路径信息
+    # --- (修改后) 保存剖面线数据到CSV文件和绘图 ---
+    if profile_data_collectors:
+        profile_output_dir = os.path.join(params['output_directory'], "profile_data")
+        os.makedirs(profile_output_dir, exist_ok=True)
+        print(f"\n保存剖面线数据到: {os.path.abspath(profile_output_dir)}")
 
-        for profile_name, collector in profile_data_collectors.items():  # 遍历剖面线数据收集器
-            if not collector["cell_ids"] or not collector["time_data"]:  # 如果没有单元或没有时间数据
-                print(f"  跳过剖面线 '{profile_name}'，因为它没有收集到单元或时间数据。")  # 打印跳过信息
-                continue  # 继续下一个剖面线
+        for profile_name, collector in profile_data_collectors.items():
+            if not collector["cell_ids"] or not collector["time_data"]:
+                print(f"  跳过剖面线 '{profile_name}'，因为它没有收集到单元或有效的时间数据。")
+                continue
 
-            # --- 确定X轴标签和值 (距离或目标X坐标) ---
-            x_axis_values = []  # 初始化X轴值列表
-            x_axis_label = "Distance along profile (m)"  # 初始化X轴标签
-            column_labels_suffix = []  # 初始化列名后缀列表
+            # 检查所有数据列表的长度是否与time_data一致
+            # 确保所有数据列表长度与 time_data 一致
+            num_time_points = len(collector["time_data"])
+            consistent_data = True
+            for data_key in ["eta_data", "h_data", "u_data", "v_data", "fr_data"]:
+                if len(collector[data_key]) != num_time_points:
+                    print(
+                        f"  警告: 剖面线 '{profile_name}' 的 '{data_key}' 数据点数量 ({len(collector[data_key])}) 与时间点数量 ({num_time_points}) 不一致。跳过此剖面线的数据处理。")
+                    consistent_data = False
+                    break
+            if not consistent_data:
+                continue
 
-            # 尝试使用 target_x (如果通过 sample_points_x 采样)
-            # 假设在 get_profile_cells 中，如果用了 sample_points_x,
-            # collector["cell_distances"] 存储的是 target_x_on_profile 或者排序后的采样点X值
-            # 并且 collector["cell_ids"] 的顺序与之对应
-            # 我们需要一种方式从 collector 中获取原始的采样点X值作为绘图的X轴
-            # 例如，如果 get_profile_cells 返回的 info 中有 'target_x_on_profile'
-            # 那么在初始化 collector 时可以存储一个 target_x_values 列表
+            x_axis_values = []
+            x_axis_label = "Distance along profile (m)"
+            column_labels_suffix = []
 
-            # 为了简单起见，我们优先使用 cell_distances (它可能是实际沿线距离或目标X值)
-            # 您可以在 get_profile_cells 返回和 collector 初始化时更明确地处理这一点
-            if collector.get("cell_distances"):  # 如果有cell_distances
-                x_axis_values = collector["cell_distances"]  # 使用cell_distances作为X轴值
-                # 生成列标签时，也用这个距离
+            if collector.get("cell_distances"):
+                x_axis_values = collector["cell_distances"]
                 column_labels_suffix = [f"dist{dist:.2f}_id{cell_id}"
                                         for cell_id, dist in
-                                        zip(collector["cell_ids"], collector["cell_distances"])]  # 定义列名后缀
-            elif collector.get("cell_x_coords"):  # 如果没有cell_distances但有cell_x_coords (备用)
-                x_axis_values = collector["cell_x_coords"]  # 使用cell_x_coords作为X轴值
-                x_axis_label = "X-coordinate (m)"  # 更新X轴标签
+                                        zip(collector["cell_ids"], collector["cell_distances"])]
+            elif collector.get("cell_x_coords"):
+                x_axis_values = collector["cell_x_coords"]
+                x_axis_label = "X-coordinate (m)"
                 column_labels_suffix = [f"x{x_coord:.2f}_id{cell_id}"
                                         for cell_id, x_coord in
-                                        zip(collector["cell_ids"], collector["cell_x_coords"])]  # 定义列名后缀
-            else:  # 如果都没有
-                print(f"  警告: 剖面线 '{profile_name}' 缺少距离或X坐标信息，无法生成有意义的列标签和绘图X轴。")  # 打印警告
-                continue  # 跳过此剖面线
+                                        zip(collector["cell_ids"], collector["cell_x_coords"])]
+            else:
+                print(f"  警告: 剖面线 '{profile_name}' 缺少距离或X坐标信息，无法生成有意义的列标签和绘图X轴。")
+                continue
 
-            df_columns_base = ["time"] + column_labels_suffix  # 定义DataFrame的基础列名
+            df_columns_base = ["time"] + column_labels_suffix
 
-            data_types_to_process = {  # 定义要处理的数据类型及其在收集器中的键名和绘图标签
+            data_types_to_process = {
                 "eta": {"key": "eta_data", "label": "Water Surface Elevation (eta) [m]", "csv_suffix": "eta"},
                 "depth": {"key": "h_data", "label": "Water Depth (h) [m]", "csv_suffix": "depth"},
                 "u_velocity": {"key": "u_data", "label": "Velocity u (m/s)", "csv_suffix": "u_vel"},
                 "v_velocity": {"key": "v_data", "label": "Velocity v (m/s)", "csv_suffix": "v_vel"},
-                "froude": {"key": "fr_data", "label": "Froude Number (-)", "csv_suffix": "froude"}  # 新增：弗劳德数
+                "froude": {"key": "fr_data", "label": "Froude Number (-)", "csv_suffix": "froude"}
             }
 
-            for data_name, data_info in data_types_to_process.items():  # 遍历要处理的数据类型
-                collector_key = data_info["key"]  # 获取收集器中的键名
-                plot_label_y = data_info["label"]  # 获取绘图Y轴标签
-                csv_suffix = data_info["csv_suffix"]  # 获取CSV文件后缀
+            for data_name, data_info in data_types_to_process.items():
+                collector_key = data_info["key"]
+                plot_label_y = data_info["label"]
+                csv_suffix = data_info["csv_suffix"]
 
-                if collector_key not in collector or not collector[collector_key]:  # 如果数据不存在或为空
-                    print(f"  剖面线 '{profile_name}' 的 '{data_name}' 数据为空，跳过。")  # 打印跳过信息
-                    continue  # 继续下一个数据类型
+                if collector_key not in collector or not collector[collector_key]:
+                    print(f"  剖面线 '{profile_name}' 的 '{data_name}' 数据为空，跳过。")
+                    continue
 
-                data_for_df = []  # 初始化DataFrame数据列表
-                raw_data_list = collector[collector_key]  # 获取原始数据列表
+                data_for_df = []
+                raw_data_list = collector[collector_key]
 
-                for t_idx, time_val in enumerate(collector["time_data"]):  # 遍历时间数据
-                    if t_idx < len(raw_data_list) and len(raw_data_list[t_idx]) == len(collector["cell_ids"]):  # 如果长度一致
-                        row_data = [time_val] + raw_data_list[t_idx]  # 构建行数据
-                        data_for_df.append(row_data)  # 添加到列表
-                    else:  # 如果长度不一致
+                for t_idx, time_val in enumerate(collector["time_data"]):
+                    # raw_data_list[t_idx] 应该是一个包含该时间点所有剖面单元值的列表
+                    if t_idx < len(raw_data_list) and isinstance(raw_data_list[t_idx], list) and len(
+                            raw_data_list[t_idx]) == len(collector["cell_ids"]):
+                        row_data = [time_val] + raw_data_list[t_idx]
+                        data_for_df.append(row_data)
+                    else:
+                        # 理论上，如果前面数据收集是正确的，这里不应该发生
                         print(
-                            f"警告: 时间 {time_val:.3f}s 的剖面线 '{profile_name}' 的 '{data_name}' 数据长度不匹配 ({len(raw_data_list[t_idx])} vs {len(collector['cell_ids'])})，已跳过此行。")  # 打印警告
+                            f"严重警告: 时间 {time_val:.3f}s 的剖面线 '{profile_name}' 的 '{data_name}' 数据格式或长度不匹配，请检查收集逻辑。数据行跳过。 "
+                            f"Expected len: {len(collector['cell_ids'])}, Got len: {len(raw_data_list[t_idx]) if t_idx < len(raw_data_list) else 'N/A'}")
 
-                if not data_for_df:  # 如果没有有效数据行
-                    print(f"  剖面线 '{profile_name}' 的 '{data_name}' 没有有效数据行可供保存或绘图。")  # 打印信息
-                    continue  # 继续下一个数据类型
+                if not data_for_df:
+                    print(f"  剖面线 '{profile_name}' 的 '{data_name}' 没有有效数据行可供保存或绘图。")
+                    continue
 
-                df_profile_data = pd.DataFrame(data_for_df, columns=df_columns_base)  # 创建DataFrame
+                df_profile_data = pd.DataFrame(data_for_df, columns=df_columns_base)
 
-                # --- 保存到CSV ---
-                csv_filename = f"profile_{profile_name}_{csv_suffix}.csv"  # 构建CSV文件名
-                csv_filepath = os.path.join(profile_output_dir, csv_filename)  # 构建CSV文件路径
-                try:  # 尝试保存CSV
-                    df_profile_data.to_csv(csv_filepath, index=False, float_format='%.6f')  # 保存到CSV
-                    print(f"  剖面线 '{profile_name}' 的 '{data_name}' 数据已保存到: {csv_filepath}")  # 打印保存信息
-                except Exception as e_csv:  # 捕获保存CSV异常
-                    print(f"  错误: 保存剖面线 '{profile_name}' 的 '{data_name}' 数据到CSV时出错: {e_csv}")  # 打印错误信息
+                csv_filename = f"profile_{profile_name}_{csv_suffix}.csv"
+                csv_filepath = os.path.join(profile_output_dir, csv_filename)
+                try:
+                    df_profile_data.to_csv(csv_filepath, index=False, float_format='%.6f')
+                    print(f"  剖面线 '{profile_name}' 的 '{data_name}' 数据已保存到: {csv_filepath}")
+                except Exception as e_csv:
+                    print(f"  错误: 保存剖面线 '{profile_name}' 的 '{data_name}' 数据到CSV时出错: {e_csv}")
 
-                # --- 绘图：绘制特定时间点的空间分布图 (类似算例图) ---
-                # (例如，绘制第一个、中间和最后一个时间点，或者您可以配置特定时间点)
                 if df_profile_data.shape[0] > 0 and df_profile_data.shape[1] > 1 and len(x_axis_values) == (
-                        df_profile_data.shape[1] - 1):  # 如果数据有效
-                    time_indices_to_plot = []  # 初始化要绘制的时间索引列表
-                    if df_profile_data.shape[0] == 1:  # 如果只有一行数据
-                        time_indices_to_plot.append(0)  # 只绘制第一行
-                    elif df_profile_data.shape[0] > 1:  # 如果有多行数据
-                        time_indices_to_plot.append(0)  # 第一个时间点
-                        if df_profile_data.shape[0] > 2: time_indices_to_plot.append(
-                            df_profile_data.shape[0] // 2)  # 中间时间点
-                        time_indices_to_plot.append(df_profile_data.shape[0] - 1)  # 最后一个时间点
-                    time_indices_to_plot = sorted(list(set(time_indices_to_plot)))  # 去重并排序
+                        df_profile_data.shape[1] - 1):
+                    time_indices_to_plot = []
+                    if df_profile_data.shape[0] == 1:
+                        time_indices_to_plot.append(0)
+                    elif df_profile_data.shape[0] > 1:
+                        time_indices_to_plot.append(0)
+                        if df_profile_data.shape[0] > 2: time_indices_to_plot.append(df_profile_data.shape[0] // 2)
+                        time_indices_to_plot.append(df_profile_data.shape[0] - 1)
+                    time_indices_to_plot = sorted(list(set(time_indices_to_plot)))
 
-                    plt.figure(figsize=(12, 7))  # 创建图形
-                    for t_idx in time_indices_to_plot:  # 遍历要绘制的时间索引
-                        time_value = df_profile_data.iloc[t_idx, 0]  # 获取时间值
-                        values_at_time = df_profile_data.iloc[t_idx, 1:].values  # 获取该时间点的数据值 (排除时间列)
-                        plt.plot(x_axis_values, values_at_time, marker='o', markersize=3, linestyle='-',
-                                 label=f"t = {time_value:.2f} s")  # 绘制折线图
+                    plt.figure(figsize=(12, 7))
+                    for t_idx_plot in time_indices_to_plot:
+                        time_value_plot = df_profile_data.iloc[t_idx_plot, 0]
+                        values_at_time_plot = df_profile_data.iloc[t_idx_plot, 1:].values
+                        plt.plot(x_axis_values, values_at_time_plot, marker='o', markersize=3, linestyle='-',
+                                 label=f"t = {time_value_plot:.2f} s")
 
-                    plt.xlabel(x_axis_label)  # 设置X轴标签
-                    plt.ylabel(plot_label_y)  # 设置Y轴标签
-                    plt.title(f"{data_name.capitalize()} along Profile: {profile_name}")  # 设置标题
-                    plt.legend()  # 显示图例
-                    plt.grid(True, linestyle='--', alpha=0.7)  # 显示网格
-                    plot_filename = f"profile_{profile_name}_{csv_suffix}_spatial.png"  # 构建图片文件名
-                    plot_filepath = os.path.join(profile_output_dir, plot_filename)  # 构建图片文件路径
-                    try:  # 尝试保存图片
-                        plt.savefig(plot_filepath)  # 保存图片
+                    plt.xlabel(x_axis_label)
+                    plt.ylabel(plot_label_y)
+                    plt.title(f"{data_name.capitalize()} along Profile: {profile_name}")
+                    plt.legend()
+                    plt.grid(True, linestyle='--', alpha=0.7)
+                    plot_filename = f"profile_{profile_name}_{csv_suffix}_spatial.png"
+                    plot_filepath = os.path.join(profile_output_dir, plot_filename)
+                    try:
+                        plt.savefig(plot_filepath)
+                        print(f"  剖面线 '{profile_name}' 的 '{data_name}' 空间分布图已保存到: {plot_filepath}")
+                    except Exception as e_plot_spatial:
                         print(
-                            f"  剖面线 '{profile_name}' 的 '{data_name}' 空间分布图已保存到: {plot_filepath}")  # 打印保存信息
-                    except Exception as e_plot_spatial:  # 捕获保存图片异常
-                        print(
-                            f"  错误: 保存剖面线 '{profile_name}' 的 '{data_name}' 空间分布图时出错: {e_plot_spatial}")  # 打印错误信息
-                    plt.close()  # 关闭图形
+                            f"  错误: 保存剖面线 '{profile_name}' 的 '{data_name}' 空间分布图时出错: {e_plot_spatial}")
+                    plt.close()
 
-                    # --- 绘图：时空等值线图 (如果数据点足够多) ---
-                    if df_profile_data.shape[0] > 1 and len(x_axis_values) > 1:  # 如果时间和空间点都大于1
-                        plot_X_contour = np.array(x_axis_values)  # X轴数据 (空间)
-                        plot_Y_contour = df_profile_data['time'].to_numpy()  # Y轴数据 (时间)
-                        plot_Z_contour = df_profile_data.iloc[:, 1:].to_numpy()  # Z轴数据 (值)
+                    if df_profile_data.shape[0] > 1 and len(x_axis_values) > 1:
+                        plot_X_contour = np.array(x_axis_values)
+                        plot_Y_contour = df_profile_data['time'].to_numpy()
+                        plot_Z_contour = df_profile_data.iloc[:, 1:].to_numpy()
 
-                        # 确保维度匹配
                         if plot_X_contour.ndim == 1 and plot_Y_contour.ndim == 1 and \
                                 plot_Z_contour.shape[0] == len(plot_Y_contour) and \
-                                plot_Z_contour.shape[1] == len(plot_X_contour):  # 如果维度匹配
+                                plot_Z_contour.shape[1] == len(plot_X_contour):
 
-                            plt.figure(figsize=(12, 7))  # 创建图形
-                            # 确定合适的等值线级别数
+                            plt.figure(figsize=(12, 7))
                             num_levels = min(30, max(5, int(np.nanmax(plot_Z_contour) - np.nanmin(
                                 plot_Z_contour)) * 2) if not np.all(np.isnan(plot_Z_contour)) else 10)
 
-                            try:  # 尝试绘制等值线图
+                            try:
                                 contour_filled = plt.contourf(plot_X_contour, plot_Y_contour, plot_Z_contour,
-                                                              levels=num_levels, cmap="viridis")  # 绘制填充等值线图
-                                plt.colorbar(contour_filled, label=plot_label_y)  # 添加颜色条
-                                plt.xlabel(x_axis_label)  # 设置X轴标签
-                                plt.ylabel("Time (s)")  # 设置Y轴标签
-                                plt.title(f"{data_name.capitalize()} Spacetime Contour: {profile_name}")  # 设置标题
-                                contour_plot_filename = f"profile_{profile_name}_{csv_suffix}_spacetime_contour.png"  # 构建图片文件名
-                                contour_plot_filepath = os.path.join(profile_output_dir,
-                                                                     contour_plot_filename)  # 构建图片文件路径
-                                plt.savefig(contour_plot_filepath)  # 保存图片
+                                                              levels=num_levels, cmap="viridis")
+                                plt.colorbar(contour_filled, label=plot_label_y)
+                                plt.xlabel(x_axis_label)
+                                plt.ylabel("Time (s)")
+                                plt.title(f"{data_name.capitalize()} Spacetime Contour: {profile_name}")
+                                contour_plot_filename = f"profile_{profile_name}_{csv_suffix}_spacetime_contour.png"
+                                contour_plot_filepath = os.path.join(profile_output_dir, contour_plot_filename)
+                                plt.savefig(contour_plot_filepath)
                                 print(
-                                    f"  剖面线 '{profile_name}' 的 '{data_name}' 时空等值线图已保存到: {contour_plot_filepath}")  # 打印保存信息
-                            except Exception as e_contour:  # 捕获绘制异常
+                                    f"  剖面线 '{profile_name}' 的 '{data_name}' 时空等值线图已保存到: {contour_plot_filepath}")
+                            except Exception as e_contour:
                                 print(
-                                    f"  警告: 绘制剖面线 '{profile_name}' 的 '{data_name}' 时空等值线图时出错: {e_contour}")  # 打印警告
-                            plt.close()  # 关闭图形
-                        else:  # 如果维度不匹配
+                                    f"  警告: 绘制剖面线 '{profile_name}' 的 '{data_name}' 时空等值线图时出错: {e_contour}")
+                            plt.close()
+                        else:
                             print(
-                                f"  跳过绘制剖面线 '{profile_name}' 的 '{data_name}' 时空等值线图，因为数据维度不匹配。")  # 打印跳过信息
+                                f"  跳过绘制剖面线 '{profile_name}' 的 '{data_name}' 时空等值线图，因为数据维度不匹配。")
                             print(
-                                f"    X_shape: {plot_X_contour.shape}, Y_shape: {plot_Y_contour.shape}, Z_shape: {plot_Z_contour.shape}")  # 打印维度信息
-
-
-    else:  # 如果没有剖面线数据收集器
-        print("\n没有配置或有效的剖面线数据收集器，不进行剖面线数据保存或绘图。")  # 打印信息
+                                f"    X_shape: {plot_X_contour.shape}, Y_shape: {plot_Y_contour.shape}, Z_shape: {plot_Z_contour.shape}")
+    else:
+        print("\n没有配置或有效的剖面线数据收集器，不进行剖面线数据保存或绘图。")
