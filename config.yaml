@@ -1,0 +1,76 @@
+# config.yaml
+
+file_paths:
+  poly_file: "data/river_boundary.poly" # 确保这个文件名和你的实际文件名一致
+  topography_file: "data/dem-杭埠河.csv"
+  node_file: "mesh/model_river.node"
+  cell_file: "mesh/model_river.cell"
+  edge_file: "mesh/model_river.edge"
+  output_directory: "output/river_sim"
+  boundary_timeseries_file: "data/boundary_conditions.csv"
+
+mesh_generation:
+  triangle_opts: "pq30aeA"
+  elevation_source_method: "interpolation"
+  interpolation_method: "nearest"
+
+simulation_control:
+  total_time: 259200.0 # 对应你的CSV数据
+  output_dt: 3600.0  # 输出频率
+  cfl_number: 0.8
+  max_dt: 1800.0      # 最大时间步长
+  use_gpu: false  # 总开关：true 或 false
+  gpu_modules:
+      - "friction"
+
+physical_parameters:
+  gravity: 9.81
+  min_depth: 0.001
+
+numerical_schemes:
+  reconstruction_scheme: "FIRST_ORDER"
+  riemann_solver: "HLLC"
+  time_scheme: "RK2_SSP"
+
+model_parameters:
+  manning_file: "data/manning_values.txt" # 如果没有，会用默认值
+  manning_n_default: 0.025             # 曼宁系数
+
+initial_conditions:
+  hu: 0.0
+  hv: 0.0
+  rules:
+    - region_poly_attribute: 2.0
+      type: "uniform_depth" # 使用水位初始化河道
+      setting_value: 1.0       # 对应 boundary_conditions.csv 中 b67_elev 的初始值
+    - region_poly_attribute: 1.0
+      type: "uniform_depth"
+      setting_value: 0.0
+  default_if_no_match:
+    type: "uniform_depth"
+    setting_value: 0.0
+
+boundary_conditions:
+  definitions:
+    "1": { type: "WALL" } # 对应.poly中标记为1的外部大边界（如果水流能到那里）
+
+
+internal_flow_lines:
+  - name: "river_inlet"
+    poly_node_ids: [128, 7] # 使用 .poly 文件中的原始节点 ID
+    # target_q_total: 800 # 你可以硬编码一个值，或者后续让Python在每步更新
+    direction: [ 1, 1 ] # ### 与之前一样，需要正确设置 ###
+  # 如果想用类似方式处理出口（例如强制一个流出量），可以再加一个定义
+  # 但通常出口用水位边界更好
+
+
+# --- 新增或修改为以下内容 ---
+internal_point_sources:
+  - name: "injection_well_1"
+    coordinates: [505000.0, 3482000.0] # 点源的X, Y坐标
+    timeseries_column: "well1_q"     # 在 boundary_conditions.csv 中对应的流量时程列名 (m^3/s)
+                                       # 如果不提供，或者找不到列，或者时程为空，则流量为0
+                                       # 正值表示注入 (source), 负值表示抽取 (sink)
+#  - name: "extraction_point_A"
+#    coordinates: [510000.0, 3483500]
+#    timeseries_column: "extractA_q" # 假设这个是抽取，其在csv中对应的值应为负

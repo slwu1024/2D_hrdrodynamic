@@ -2,7 +2,6 @@
 #include "HydroModelCore_cpp.h" // 包含对应的头文件
 #include "WettingDrying_cpp.h" // <--- 确保包含了这个头文件
 #include "FluxCalculator_cpp.h"
-#include "Profiler.h"
 #include <stdexcept> // 包含标准异常
 #include <iostream>  // 包含输入输出流
 #include <algorithm> // 包含算法
@@ -45,7 +44,6 @@ void HydroModelCore_cpp::initialize_model_from_files(
     ReconstructionScheme_cpp recon_scheme,
     RiemannSolverType_cpp riemann_solver,
     TimeScheme_cpp time_scheme) {
-    PROFILE_FUNCTION(); // 记录整个初始化函数的耗时
 
     std::cout << "C++ HydroModelCore_cpp: Starting full model initialization from files." << std::endl; // 打印开始信息
     // 1. 创建并加载网格
@@ -337,7 +335,6 @@ void HydroModelCore_cpp::setup_internal_point_source_cpp(
 }
 
 StateVector HydroModelCore_cpp::_apply_point_sources_internal(const StateVector& U_input, double dt, double time_current) {
-    PROFILE_FUNCTION();
     StateVector U_output = U_input; // 复制输入状态作为输出基础
 
     if (internal_point_sources_info_internal.empty()) { // 如果没有配置点源
@@ -387,7 +384,6 @@ StateVector HydroModelCore_cpp::_apply_point_sources_internal(const StateVector&
 }
 
 StateVector HydroModelCore_cpp::_apply_internal_flow_source_terms(const StateVector& U_input, double dt, double time_current) {
-    PROFILE_FUNCTION();
     StateVector U_output = U_input; // 复制输入状态
 
     if (all_internal_flow_edges_info_map_internal.empty()) { // 如果没有任何已定义的内部流量线
@@ -573,7 +569,6 @@ void HydroModelCore_cpp::setup_boundary_conditions_cpp( // 设置边界条件(C+
 
 
 StateVector HydroModelCore_cpp::_calculate_rhs_explicit_part_internal(const StateVector& U_current_rhs, double time_current_rhs) {
-    PROFILE_FUNCTION(); // 自动使用函数名 "_calculate_rhs_explicit_part_internal"
     if (!mesh_internal_ptr || U_current_rhs.size() != mesh_internal_ptr->cells.size()) {
         throw std::runtime_error("Invalid mesh or U_current_rhs size in RHS calculation.");
     }
@@ -585,7 +580,6 @@ StateVector HydroModelCore_cpp::_calculate_rhs_explicit_part_internal(const Stat
 
     bool gradients_available = false;
     if (reconstruction_ptr->get_scheme_type() != ReconstructionScheme_cpp::FIRST_ORDER) {
-        PROFILE_SCOPE("RHS_Reconstruction_Prepare"); // 计时重构准备步骤
         try {
             reconstruction_ptr->prepare_for_step(U_current_rhs);
             gradients_available = true;
@@ -605,180 +599,188 @@ StateVector HydroModelCore_cpp::_calculate_rhs_explicit_part_internal(const Stat
 
     bool time_is_in_debug_range_rhs = (time_current_rhs >= target_time_min_debug && time_current_rhs <= target_time_max_debug);
 
-    // --- 为整个边循环创建一个总的计时作用域 ---
-    {
-        PROFILE_SCOPE("RHS_EdgeLoop_Total"); // 计时所有边的处理
 
-        for (const auto& he : mesh_internal_ptr->half_edges) {
-            // ... (获取 cell_L_ptr) ...
-            const Cell_cpp* cell_L_ptr = mesh_internal_ptr->get_cell_by_id(he.cell_id);
-            if (!cell_L_ptr) continue; // Should not happen if mesh is consistent
 
-            // 1. 获取左单元中心状态
-            const auto& U_L_center_cons = U_current_rhs[cell_L_ptr->id];
-            PrimitiveVars_cpp W_L_center = reconstruction_ptr->conserved_to_primitive(U_L_center_cons); // 使用Reconstruction的转换函数
-            double Z_L_centroid = cell_L_ptr->z_bed_centroid;
-            double eta_L_center = U_L_center_cons[0] + Z_L_centroid; // h + z_bed
+    for (const auto& he : mesh_internal_ptr->half_edges) {
+        // ... (获取 cell_L_ptr) ...
+        const Cell_cpp* cell_L_ptr = mesh_internal_ptr->get_cell_by_id(he.cell_id);
+        if (!cell_L_ptr) continue; // Should not happen if mesh is consistent
 
-            PrimitiveVars_cpp W_L_flux, W_R_flux; // 用于HLLC的最终界面状态
-            std::array<double, 3> numerical_flux_cartesian;
-            std::array<double, 3> source_term_L_interface = {0.0, 0.0, 0.0}; // 初始化界面源项对L的贡献
-            std::array<double, 3> source_term_R_interface = {0.0, 0.0, 0.0}; // 初始化界面源项对R的贡献
+        // 1. 获取左单元中心状态
+        const auto& U_L_center_cons = U_current_rhs[cell_L_ptr->id];
+        PrimitiveVars_cpp W_L_center = reconstruction_ptr->conserved_to_primitive(U_L_center_cons); // 使用Reconstruction的转换函数
+        double Z_L_centroid = cell_L_ptr->z_bed_centroid;
+        double eta_L_center = U_L_center_cons[0] + Z_L_centroid; // h + z_bed
 
-            if (he.twin_half_edge_id != -1) { // --- 处理内部边 ---
-                // --- 添加调试打印：边界边RHS更新 ---
-                bool is_target_discharge_boundary = (he.boundary_marker == 10); // 假设10是你的流量边界标记
-                if (is_target_discharge_boundary && time_current_rhs < 0.1) { // 只在早期且为目标边界时打印
-                    std::cout << "[DEBUG_RHS_UPDATE_BND] Time: " << time_current_rhs
-                              << ", Boundary HE_ID: " << he.id
-                              << ", Cell_L_ID: " << cell_L_ptr->id
-                              << ", Marker: " << he.boundary_marker << std::endl;
+        PrimitiveVars_cpp W_L_flux, W_R_flux; // 用于HLLC的最终界面状态
+        std::array<double, 3> numerical_flux_cartesian;
+        std::array<double, 3> source_term_L_interface = {0.0, 0.0, 0.0}; // 初始化界面源项对L的贡献
+        std::array<double, 3> source_term_R_interface = {0.0, 0.0, 0.0}; // 初始化界面源项对R的贡献
+
+        if (he.twin_half_edge_id != -1) { // --- 处理内部边 ---
+            // --- 添加调试打印：边界边RHS更新 ---
+            bool is_target_discharge_boundary = (he.boundary_marker == 10); // 假设10是你的流量边界标记
+            if (is_target_discharge_boundary && time_current_rhs < 0.1) { // 只在早期且为目标边界时打印
+                std::cout << "[DEBUG_RHS_UPDATE_BND] Time: " << time_current_rhs
+                          << ", Boundary HE_ID: " << he.id
+                          << ", Cell_L_ID: " << cell_L_ptr->id
+                          << ", Marker: " << he.boundary_marker << std::endl;
+            }
+            // --- 调试打印结束 ---
+            if (static_cast<unsigned int>(he.id) >= static_cast<unsigned int>(he.twin_half_edge_id)) { continue; } // 避免重复
+
+            const HalfEdge_cpp* he_twin_ptr = mesh_internal_ptr->get_half_edge_by_id(he.twin_half_edge_id);
+            const Cell_cpp* cell_R_ptr = mesh_internal_ptr->get_cell_by_id(he_twin_ptr->cell_id);
+            // ... (检查 cell_R_ptr有效性) ...
+
+            // 2. 获取右单元中心状态
+            const auto& U_R_center_cons = U_current_rhs[cell_R_ptr->id];
+            PrimitiveVars_cpp W_R_center = reconstruction_ptr->conserved_to_primitive(U_R_center_cons);
+            double Z_R_centroid = cell_R_ptr->z_bed_centroid;
+            double eta_R_center = U_R_center_cons[0] + Z_R_centroid;
+
+            // 3. 定义界面底高程 (Audusse et al. 2005, eq. 4.2 - Z_ij = max(Z_i, Z_j))
+            double Z_interface = std::max(Z_L_centroid, Z_R_centroid);
+            // 或者使用你原来的 z_face (边中点节点的底高程平均)
+            // double Z_interface = z_face; // (你需要确保z_face在这里已计算)
+            // 为了与文献方法一致，我们先用 max(Z_L, Z_R)
+
+            // 4. 静水重构左右两侧的水深 (Audusse et al. 2005, eq. 4.3 - h*_ij = (eta_i - Z_ij)+ )
+            // 注意，文献中的 h*_ij 是指从单元i看界面ij的值。我们的he从L到R。
+            // h_L_star 是从 L 看 he 的值，h_R_star 是从 R 看 he_twin 的值 (即从R看he的值)
+            double h_L_star = std::max(0.0, eta_L_center - Z_interface);
+            double h_R_star = std::max(0.0, eta_R_center - Z_interface);
+
+            W_L_flux.h = h_L_star;
+            W_L_flux.u = W_L_center.u; // 一阶：使用单元中心速度
+            W_L_flux.v = W_L_center.v;
+            if (h_L_star < min_depth_internal * 1.1) { // 阈值可以调整
+                W_L_flux.u = 0.0; W_L_flux.v = 0.0;
+            }
+
+            W_R_flux.h = h_R_star;
+            W_R_flux.u = W_R_center.u; // 一阶：使用单元中心速度
+            W_R_flux.v = W_R_center.v;
+            if (h_R_star < min_depth_internal * 1.1) {
+                W_R_flux.u = 0.0; W_R_flux.v = 0.0;
+            }
+
+            // 5. 计算数值通量
+            numerical_flux_cartesian = flux_calculator_ptr->calculate_hllc_flux(W_L_flux, W_R_flux, he.normal);
+
+            // 6. 计算界面源项 (Audusse et al. 2005, eq. 4.4)
+            // S(U_i, U*_ij, n_ij) = (0, g/2 * ( (h*_ij)^2 - h_i^2 ) * n_ij)
+            // 对于单元 L，它"失去" S(U_L, U*_L_to_R, he.normal)
+            // U*_L_to_R 是指 (h_L_star, h_L_star*u_L_center, h_L_star*v_L_center)
+            // 但源项只作用于动量，且只与水深有关
+            source_term_L_interface[1] = 0.5 * gravity_internal * (h_L_star * h_L_star - U_L_center_cons[0] * U_L_center_cons[0]) * he.normal[0];
+            source_term_L_interface[2] = 0.5 * gravity_internal * (h_L_star * h_L_star - U_L_center_cons[0] * U_L_center_cons[0]) * he.normal[1];
+
+            // 对于单元 R，它"得到" S(U_R, U*_R_to_L, he_twin.normal)
+            // U*_R_to_L 是指 (h_R_star, h_R_star*u_R_center, h_R_star*v_R_center)
+            // he_twin.normal = -he.normal
+            source_term_R_interface[1] = 0.5 * gravity_internal * (h_R_star * h_R_star - U_R_center_cons[0] * U_R_center_cons[0]) * (-he.normal[0]);
+            source_term_R_interface[2] = 0.5 * gravity_internal * (h_R_star * h_R_star - U_R_center_cons[0] * U_R_center_cons[0]) * (-he.normal[1]);
+
+            // 打印更新RHS前的状态
+            if (is_target_discharge_boundary && time_current_rhs < 0.1) {
+                std::cout << "  Flux from BC Handler (Cartesian): Fh=" << numerical_flux_cartesian[0]
+                          << ", Fhu=" << numerical_flux_cartesian[1] << ", Fhv=" << numerical_flux_cartesian[2] << std::endl;
+                std::cout << "  Source_L_Interface (Cartesian, if any): S_hu=" << source_term_L_interface[1] // 假设你这里计算了
+                          << ", S_hv=" << source_term_L_interface[2] << std::endl;
+                std::cout << "  RHS for Cell " << cell_L_ptr->id << " BEFORE [h,hu,hv]: ("
+                          << RHS_vector[cell_L_ptr->id][0] << ","
+                          << RHS_vector[cell_L_ptr->id][1] << ","
+                          << RHS_vector[cell_L_ptr->id][2] << ")" << std::endl;
+            }
+            // 7. 更新RHS (通量贡献 + 界面源项贡献)
+            // (符号约定：F指向外部为负，S指向内部为正，或者F和S都按流出单元为负)
+            // Audusse (4.5): dU_i/dt = ... - F_ij + S_ij ...
+            // 如果 F_ij 是流出 i 的通量，S_ij 是作用在 i 上通过界面 ij 的源项
+            for (int k = 0; k < 3; ++k) {
+                double flux_val_times_length = numerical_flux_cartesian[k] * he.length;
+                double source_L_val_times_length = source_term_L_interface[k] * he.length; // 这是作用在L上的源项
+                double source_R_val_times_length = source_term_R_interface[k] * he.length; // 这是作用在R上的源项
+
+                if (cell_L_ptr->area > epsilon) {
+                    RHS_vector[cell_L_ptr->id][k] -= flux_val_times_length / cell_L_ptr->area; // 通量流出L
+                    RHS_vector[cell_L_ptr->id][k] += source_L_val_times_length / cell_L_ptr->area; // 源项作用于L
                 }
-                // --- 调试打印结束 ---
-                if (static_cast<unsigned int>(he.id) >= static_cast<unsigned int>(he.twin_half_edge_id)) { continue; } // 避免重复
-
-                const HalfEdge_cpp* he_twin_ptr = mesh_internal_ptr->get_half_edge_by_id(he.twin_half_edge_id);
-                const Cell_cpp* cell_R_ptr = mesh_internal_ptr->get_cell_by_id(he_twin_ptr->cell_id);
-                // ... (检查 cell_R_ptr有效性) ...
-
-                // 2. 获取右单元中心状态
-                const auto& U_R_center_cons = U_current_rhs[cell_R_ptr->id];
-                PrimitiveVars_cpp W_R_center = reconstruction_ptr->conserved_to_primitive(U_R_center_cons);
-                double Z_R_centroid = cell_R_ptr->z_bed_centroid;
-                double eta_R_center = U_R_center_cons[0] + Z_R_centroid;
-
-                // 3. 定义界面底高程 (Audusse et al. 2005, eq. 4.2 - Z_ij = max(Z_i, Z_j))
-                double Z_interface = std::max(Z_L_centroid, Z_R_centroid);
-                // 或者使用你原来的 z_face (边中点节点的底高程平均)
-                // double Z_interface = z_face; // (你需要确保z_face在这里已计算)
-                // 为了与文献方法一致，我们先用 max(Z_L, Z_R)
-
-                // 4. 静水重构左右两侧的水深 (Audusse et al. 2005, eq. 4.3 - h*_ij = (eta_i - Z_ij)+ )
-                // 注意，文献中的 h*_ij 是指从单元i看界面ij的值。我们的he从L到R。
-                // h_L_star 是从 L 看 he 的值，h_R_star 是从 R 看 he_twin 的值 (即从R看he的值)
-                double h_L_star = std::max(0.0, eta_L_center - Z_interface);
-                double h_R_star = std::max(0.0, eta_R_center - Z_interface);
-
-                W_L_flux.h = h_L_star;
-                W_L_flux.u = W_L_center.u; // 一阶：使用单元中心速度
-                W_L_flux.v = W_L_center.v;
-                if (h_L_star < min_depth_internal * 1.1) { // 阈值可以调整
-                    W_L_flux.u = 0.0; W_L_flux.v = 0.0;
+                if (cell_R_ptr->area > epsilon) {
+                    RHS_vector[cell_R_ptr->id][k] += flux_val_times_length / cell_R_ptr->area; // 通量流入R
+                    RHS_vector[cell_R_ptr->id][k] += source_R_val_times_length / cell_R_ptr->area; // 源项作用于R
                 }
+            }
+            // 打印更新RHS后的状态
+            if (is_target_discharge_boundary && time_current_rhs < 0.1) {
+                std::cout << "  RHS for Cell " << cell_L_ptr->id << " AFTER [h,hu,hv]: ("
+                          << RHS_vector[cell_L_ptr->id][0] << ","
+                          << RHS_vector[cell_L_ptr->id][1] << ","
+                          << RHS_vector[cell_L_ptr->id][2] << ")" << std::endl;
+            }
 
-                W_R_flux.h = h_R_star;
-                W_R_flux.u = W_R_center.u; // 一阶：使用单元中心速度
-                W_R_flux.v = W_R_center.v;
-                if (h_R_star < min_depth_internal * 1.1) {
-                    W_R_flux.u = 0.0; W_R_flux.v = 0.0;
-                }
+        } else { // --- 处理边界边 ---
+            // ************************** 新增/修改的调试打印 **************************
+            if (he.boundary_marker == 10 && time_current_rhs < 0.2) { // 检查时间稍微延长一点
+                std::cout << "[DEBUG_RHS_BND_FLUX_CALC] Time: " << std::fixed << std::setprecision(5) << time_current_rhs
+                          << ", Boundary HE_ID: " << he.id
+                          << ", Cell_L_ID: " << cell_L_ptr->id
+                          << ", Marker: " << he.boundary_marker
+                          << ", OrigSegID: " << he.original_poly_segment_id
+                          << std::endl;
+                // 打印一下左单元的状态
+                std::cout << "  Cell_L U(h,hu,hv): " << U_current_rhs[cell_L_ptr->id][0] << ", "
+                          << U_current_rhs[cell_L_ptr->id][1] << ", "
+                          << U_current_rhs[cell_L_ptr->id][2] << std::endl;
+            }
+            // ***********************************************************************
+            // 1. 界面底高程 (对于边界，可以认为外部单元底高程与内部单元相同，或使用实际边界高程)
+            // 简单起见，Z_interface = Z_L_centroid; (这使得 h_L_star = h_L_center)
+            // 或者，如果边界上有精确的 z_face: Z_interface = z_face; (你需要先计算z_face)
+            // 我们这里先用 Z_L_centroid，这意味着边界上的静水重构水深等于单元中心水深
+            double Z_interface_bnd = Z_L_centroid; // 或 z_face
 
-                // 5. 计算数值通量
+            // 2. 静水重构左侧状态
+            double h_L_star_bnd = std::max(0.0, eta_L_center - Z_interface_bnd);
+            W_L_flux.h = h_L_star_bnd;
+            W_L_flux.u = W_L_center.u;
+            W_L_flux.v = W_L_center.v;
+            if (h_L_star_bnd < min_depth_internal * 1.1) {
+                W_L_flux.u = 0.0; W_L_flux.v = 0.0;
+            }
 
-                numerical_flux_cartesian = flux_calculator_ptr->calculate_hllc_flux(W_L_flux, W_R_flux, he.normal);
+            // 3. 计算边界通量 (传递重构后的W_L_flux)
+            // 你需要修改 boundary_handler_ptr->calculate_boundary_flux 的接口
+            // 使其接受 PrimitiveVars_cpp W_L_reconstructed 作为输入，而不是U_state_all
+            // 或者，让它内部自己做与这里类似的静水重构。
+            // 为了保持一致性，最好是传递 W_L_flux。
+            // 假设你已经修改了接口：
+            // numerical_flux_cartesian = boundary_handler_ptr->calculate_boundary_flux_reconstructed(
+            // W_L_flux, cell_L_ptr->id, he, time_current_rhs);
 
-
-                // 6. 计算界面源项 (Audusse et al. 2005, eq. 4.4)
-                // S(U_i, U*_ij, n_ij) = (0, g/2 * ( (h*_ij)^2 - h_i^2 ) * n_ij)
-                // 对于单元 L，它"失去" S(U_L, U*_L_to_R, he.normal)
-                // U*_L_to_R 是指 (h_L_star, h_L_star*u_L_center, h_L_star*v_L_center)
-                // 但源项只作用于动量，且只与水深有关
-                source_term_L_interface[1] = 0.5 * gravity_internal * (h_L_star * h_L_star - U_L_center_cons[0] * U_L_center_cons[0]) * he.normal[0];
-                source_term_L_interface[2] = 0.5 * gravity_internal * (h_L_star * h_L_star - U_L_center_cons[0] * U_L_center_cons[0]) * he.normal[1];
-
-                // 对于单元 R，它"得到" S(U_R, U*_R_to_L, he_twin.normal)
-                // U*_R_to_L 是指 (h_R_star, h_R_star*u_R_center, h_R_star*v_R_center)
-                // he_twin.normal = -he.normal
-                source_term_R_interface[1] = 0.5 * gravity_internal * (h_R_star * h_R_star - U_R_center_cons[0] * U_R_center_cons[0]) * (-he.normal[0]);
-                source_term_R_interface[2] = 0.5 * gravity_internal * (h_R_star * h_R_star - U_R_center_cons[0] * U_R_center_cons[0]) * (-he.normal[1]);
-
-                // 打印更新RHS前的状态
-                if (is_target_discharge_boundary && time_current_rhs < 0.1) {
-                    std::cout << "  Flux from BC Handler (Cartesian): Fh=" << numerical_flux_cartesian[0]
-                              << ", Fhu=" << numerical_flux_cartesian[1] << ", Fhv=" << numerical_flux_cartesian[2] << std::endl;
-                    std::cout << "  Source_L_Interface (Cartesian, if any): S_hu=" << source_term_L_interface[1] // 假设你这里计算了
-                              << ", S_hv=" << source_term_L_interface[2] << std::endl;
-                    std::cout << "  RHS for Cell " << cell_L_ptr->id << " BEFORE [h,hu,hv]: ("
-                              << RHS_vector[cell_L_ptr->id][0] << ","
-                              << RHS_vector[cell_L_ptr->id][1] << ","
-                              << RHS_vector[cell_L_ptr->id][2] << ")" << std::endl;
-                }
-                // 7. 更新RHS (通量贡献 + 界面源项贡献)
-                // (符号约定：F指向外部为负，S指向内部为正，或者F和S都按流出单元为负)
-                // Audusse (4.5): dU_i/dt = ... - F_ij + S_ij ...
-                // 如果 F_ij 是流出 i 的通量，S_ij 是作用在 i 上通过界面 ij 的源项
-                for (int k = 0; k < 3; ++k) {
-                    double flux_val_times_length = numerical_flux_cartesian[k] * he.length;
-                    double source_L_val_times_length = source_term_L_interface[k] * he.length; // 这是作用在L上的源项
-                    double source_R_val_times_length = source_term_R_interface[k] * he.length; // 这是作用在R上的源项
-
-                    if (cell_L_ptr->area > epsilon) {
-                        RHS_vector[cell_L_ptr->id][k] -= flux_val_times_length / cell_L_ptr->area; // 通量流出L
-                        RHS_vector[cell_L_ptr->id][k] += source_L_val_times_length / cell_L_ptr->area; // 源项作用于L
-                    }
-                    if (cell_R_ptr->area > epsilon) {
-                        RHS_vector[cell_R_ptr->id][k] += flux_val_times_length / cell_R_ptr->area; // 通量流入R
-                        RHS_vector[cell_R_ptr->id][k] += source_R_val_times_length / cell_R_ptr->area; // 源项作用于R
-                    }
-                }
-                // 打印更新RHS后的状态
-                if (is_target_discharge_boundary && time_current_rhs < 0.1) {
-                    std::cout << "  RHS for Cell " << cell_L_ptr->id << " AFTER [h,hu,hv]: ("
-                              << RHS_vector[cell_L_ptr->id][0] << ","
-                              << RHS_vector[cell_L_ptr->id][1] << ","
-                              << RHS_vector[cell_L_ptr->id][2] << ")" << std::endl;
-                }
-
-            } else { // --- 处理边界边 ---
-
-                // 1. 界面底高程 (对于边界，可以认为外部单元底高程与内部单元相同，或使用实际边界高程)
-                // 简单起见，Z_interface = Z_L_centroid; (这使得 h_L_star = h_L_center)
-                // 或者，如果边界上有精确的 z_face: Z_interface = z_face; (你需要先计算z_face)
-                // 我们这里先用 Z_L_centroid，这意味着边界上的静水重构水深等于单元中心水深
-                double Z_interface_bnd = Z_L_centroid; // 或 z_face
-
-                // 2. 静水重构左侧状态
-                double h_L_star_bnd = std::max(0.0, eta_L_center - Z_interface_bnd);
-                W_L_flux.h = h_L_star_bnd;
-                W_L_flux.u = W_L_center.u;
-                W_L_flux.v = W_L_center.v;
-                if (h_L_star_bnd < min_depth_internal * 1.1) {
-                    W_L_flux.u = 0.0; W_L_flux.v = 0.0;
-                }
-
-                // 3. 计算边界通量 (传递重构后的W_L_flux)
-                // 你需要修改 boundary_handler_ptr->calculate_boundary_flux 的接口
-                // 使其接受 PrimitiveVars_cpp W_L_reconstructed 作为输入，而不是U_state_all
-                // 或者，让它内部自己做与这里类似的静水重构。
-                // 为了保持一致性，最好是传递 W_L_flux。
-                // 假设你已经修改了接口：
-                // numerical_flux_cartesian = boundary_handler_ptr->calculate_boundary_flux_reconstructed(
-                // W_L_flux, cell_L_ptr->id, he, time_current_rhs);
-
-                // 如果暂时不改接口，它内部的逻辑是：
-                // W_L_recons_iface 来自 reconstruction_ptr->get_reconstructed_interface_states(U_current_rhs, cell_L_ptr->id, -1, he, true)
-                // eta_L_at_face (一阶时是 eta_L_center)
-                // h_L_star = std::max(0.0, eta_L_at_face - z_face); (z_face是边界中点高程)
-                // 这与我们上面用 Z_interface_bnd = z_face 得到的结果是一致的。
-                // 所以，暂时可以不修改 BoundaryConditionHandler 的调用。
-                numerical_flux_cartesian = boundary_handler_ptr->calculate_boundary_flux(
-                        U_current_rhs, cell_L_ptr->id, he, time_current_rhs);
+            // 如果暂时不改接口，它内部的逻辑是：
+            // W_L_recons_iface 来自 reconstruction_ptr->get_reconstructed_interface_states(U_current_rhs, cell_L_ptr->id, -1, he, true)
+            // eta_L_at_face (一阶时是 eta_L_center)
+            // h_L_star = std::max(0.0, eta_L_at_face - z_face); (z_face是边界中点高程)
+            // 这与我们上面用 Z_interface_bnd = z_face 得到的结果是一致的。
+            // 所以，暂时可以不修改 BoundaryConditionHandler 的调用。
+            numerical_flux_cartesian = boundary_handler_ptr->calculate_boundary_flux(
+                U_current_rhs, cell_L_ptr->id, he, time_current_rhs);
 
 
-                // 4. 计算边界界面源项 (只作用于单元L)
-                // S(U_L, U*_L_bnd, he.normal)
-                // U*_L_bnd 是 (h_L_star_bnd, ...)
-                source_term_L_interface[1] = 0.5 * gravity_internal * (h_L_star_bnd * h_L_star_bnd - U_L_center_cons[0] * U_L_center_cons[0]) * he.normal[0];
-                source_term_L_interface[2] = 0.5 * gravity_internal * (h_L_star_bnd * h_L_star_bnd - U_L_center_cons[0] * U_L_center_cons[0]) * he.normal[1];
+            // 4. 计算边界界面源项 (只作用于单元L)
+            // S(U_L, U*_L_bnd, he.normal)
+            // U*_L_bnd 是 (h_L_star_bnd, ...)
+            source_term_L_interface[1] = 0.5 * gravity_internal * (h_L_star_bnd * h_L_star_bnd - U_L_center_cons[0] * U_L_center_cons[0]) * he.normal[0];
+            source_term_L_interface[2] = 0.5 * gravity_internal * (h_L_star_bnd * h_L_star_bnd - U_L_center_cons[0] * U_L_center_cons[0]) * he.normal[1];
 
-                // 5. 更新RHS
-                for (int k = 0; k < 3; ++k) {
-                    double flux_val_times_length = numerical_flux_cartesian[k] * he.length;
-                    double source_L_val_times_length = source_term_L_interface[k] * he.length;
-                    if (cell_L_ptr->area > epsilon) {
-                        RHS_vector[cell_L_ptr->id][k] -= flux_val_times_length / cell_L_ptr->area;
-                        RHS_vector[cell_L_ptr->id][k] += source_L_val_times_length / cell_L_ptr->area;
-                    }
+            // 5. 更新RHS
+            for (int k = 0; k < 3; ++k) {
+                double flux_val_times_length = numerical_flux_cartesian[k] * he.length;
+                double source_L_val_times_length = source_term_L_interface[k] * he.length;
+                if (cell_L_ptr->area > epsilon) {
+                    RHS_vector[cell_L_ptr->id][k] -= flux_val_times_length / cell_L_ptr->area;
+                    RHS_vector[cell_L_ptr->id][k] += source_L_val_times_length / cell_L_ptr->area;
                 }
             }
         }
@@ -799,7 +801,6 @@ StateVector HydroModelCore_cpp::_calculate_rhs_explicit_part_internal(const Stat
 
 StateVector HydroModelCore_cpp::_apply_friction_semi_implicit_internal(const StateVector& U_input_friction, // 应用半隐式摩擦(内部)实现
                                                                     const StateVector& U_coeffs_friction, double dt_friction) {
-    PROFILE_FUNCTION();
     if (!source_term_calculator_ptr) { // 如果源项计算器无效
         throw std::runtime_error("SourceTermCalculator not initialized for friction."); // 抛出运行时错误
     }
@@ -815,7 +816,6 @@ StateVector HydroModelCore_cpp::_apply_friction_semi_implicit_internal(const Sta
 } // 结束函数
 
 double HydroModelCore_cpp::_calculate_dt_internal() {
-    PROFILE_FUNCTION();
     if (!mesh_internal_ptr || U_state_all_internal.size() != mesh_internal_ptr->cells.size()) {
         return max_dt_internal;
     }
@@ -827,7 +827,7 @@ double HydroModelCore_cpp::_calculate_dt_internal() {
     double cfl_term_at_problem_cell = 0.0;
 
     // 定义一个阈值，比如 min_depth_internal 的5倍。低于此阈值的水深将受到特殊处理。
-    const double shallow_water_threshold_for_dt = std::max(min_depth_internal * 50.0, 1e-4); // 新增：为dt计算定义一个浅水阈值
+    const double shallow_water_threshold_for_dt = min_depth_internal * 5.0; // 新增：为dt计算定义一个浅水阈值
     // 定义在浅水区dt计算中允许的最大速度（如果不想完全置零）
     const double max_speed_in_shallow_for_dt = 0.1; // 例如0.1 m/s，非常小 // 新增：为dt计算在浅水区设置一个最大速度
 
@@ -910,34 +910,35 @@ double HydroModelCore_cpp::_calculate_dt_internal() {
 
     double calculated_dt = cfl_number_internal / min_dt_inv_term;
 
-    // static int dt_calc_print_counter = 0;
-    // if (problematic_cell_id_for_dt != -1 && dt_calc_print_counter % 100 == 0) { // 每100次dt计算打印一次
-    //     const Cell_cpp& p_cell_info = mesh_internal_ptr->cells[problematic_cell_id_for_dt];
-    //     double ph_orig_info = U_state_all_internal[problematic_cell_id_for_dt][0];
-    //     double phu_orig_info = U_state_all_internal[problematic_cell_id_for_dt][1];
-    //     double phv_orig_info = U_state_all_internal[problematic_cell_id_for_dt][2];
-    //
-    //     std::cout << std::fixed << std::setprecision(10); // 保证精度
-    //     std::cout << "C++ DT_LIMITING_CELL_INFO: Time=" << current_time_internal
-    //               << ", Target_dt_before_max_dt_clip=" << calculated_dt // 这是CFL计算出的dt
-    //               << ", Problem_Cell_ID=" << problematic_cell_id_for_dt
-    //               << ", Orig_h=" << ph_orig_info << ", Orig_hu=" << phu_orig_info << ", Orig_hv=" << phv_orig_info
-    //               << ", h_for_dt_calc=" << h_at_problem_cell // 用于dt计算的h
-    //               << ", u_eff_in_dt=" << u_at_problem_cell // 用于dt计算的u (可能修正后)
-    //               << ", v_eff_in_dt=" << v_at_problem_cell // 用于dt计算的v (可能修正后)
-    //               << ", cell_area=" << p_cell_info.area
-    //               << ", cell_CFL_term_sum_lambda_L_over_A=" << cfl_term_at_problem_cell // (sum |un_i|+c_i * L_i) / Area_cell
-    //               << std::endl;
-    // }
-    // dt_calc_print_counter++;
+    // 保持 CRITICAL_DT_INFO 日志，触发阈值 5e-6 仍然适用
+    if (calculated_dt < 0.000005 && problematic_cell_id_for_dt != -1) {
+        const Cell_cpp& p_cell = mesh_internal_ptr->cells[problematic_cell_id_for_dt];
+        double ph_orig = U_state_all_internal[problematic_cell_id_for_dt][0];
+        double phu_orig = U_state_all_internal[problematic_cell_id_for_dt][1];
+        double phv_orig = U_state_all_internal[problematic_cell_id_for_dt][2];
+
+        std::cout << std::fixed << std::setprecision(10);
+        std::cout << "C++ CRITICAL_DT_INFO (Threshold 5e-6): Time=" << current_time_internal
+                  << ", Calculated dt=" << calculated_dt
+                  << ". Problem Cell ID: " << problematic_cell_id_for_dt
+                  << ", Orig_h=" << ph_orig << ", Orig_hu=" << phu_orig << ", Orig_hv=" << phv_orig
+                  << ", h_of_prob_cell=" << h_at_problem_cell // 之前记录的h (原始h)
+                  << ", u_eff_in_dt=" << u_at_problem_cell // 之前记录的u (可能修正后)
+                  << ", v_eff_in_dt=" << v_at_problem_cell // 之前记录的v (可能修正后)
+                  << ", cell_area=" << p_cell.area
+                  << ", cell_CFL_term_val=" << cfl_term_at_problem_cell
+                  << std::endl;
+    }
 
     return std::min(calculated_dt, max_dt_internal);
 }
 
 
 void HydroModelCore_cpp::_handle_dry_cells_and_update_eta_internal() { // 处理干单元并更新水位(内部)实现
-    PROFILE_FUNCTION();
 
+    // --- 修改：针对 t=0 时的调试 ---
+    const int problem_cell_vfr_1 = 0; // 假设单元ID 0 是一个你想观察的单元（例如初始为湿的单元） // 新增：设置调试单元ID
+    const int problem_cell_vfr_2 = -1; // 暂时禁用第二个问题单元的调试 // 新增：禁用第二个调试单元
 
     if (!mesh_internal_ptr || !vfr_calculator_ptr || U_state_all_internal.size() != mesh_internal_ptr->cells.size()) {
         return;
@@ -954,7 +955,7 @@ void HydroModelCore_cpp::_handle_dry_cells_and_update_eta_internal() { // 处理
         Cell_cpp& cell = mesh_internal_ptr->cells[i];
         std::array<double, 3>& U_cell = U_state_all_internal[i];
 
-
+        // --- 修改：更积极地清零浅水区的动量 ---
         const double momentum_zeroing_h_threshold = min_depth_internal * 10.0; // 例如，1e-6
         // 这个阈值可以根据情况调整，比如 5*min_depth 或 10*min_depth
 
@@ -969,6 +970,7 @@ void HydroModelCore_cpp::_handle_dry_cells_and_update_eta_internal() { // 处理
             // 否则，保留 U_cell[0] 的值（它在 min_depth_internal 和 momentum_zeroing_h_threshold 之间）
             // 但其动量已经被清零。
         }
+        // --- 修改结束 ---
 
 
         double h_avg_non_negative_for_vfr = std::max(0.0, U_cell[0]); // 计算用于VFR的非负平均水深 // 新增：获取非负平均水深
@@ -1012,7 +1014,6 @@ void HydroModelCore_cpp::_handle_dry_cells_and_update_eta_internal() { // 处理
 }
 
 bool HydroModelCore_cpp::advance_one_step() {
-    PROFILE_FUNCTION(); // 计时整个 advance_one_step 函数
 
     if (!model_fully_initialized_flag || !initial_conditions_set_flag || !boundary_conditions_set_flag) {
         std::string error_msg = "Model not fully initialized/configured before calling advance_one_step. Flags: ";
@@ -1025,36 +1026,24 @@ bool HydroModelCore_cpp::advance_one_step() {
          throw std::runtime_error("Time integrator or initial state not ready for step.");
     }
 
-    double dt = 0.0;
-    { // 为 dt 计算添加计时作用域
-        PROFILE_SCOPE("CalculateDtInternal");
-        dt = _calculate_dt_internal();
-    }
-
+    double dt = _calculate_dt_internal();
     double actual_output_dt = output_dt_internal;
-    // 确保如果 output_dt 设置为0或非常小，它不会干扰总时间判断
     if (actual_output_dt <= epsilon && total_time_internal > epsilon) {
-         actual_output_dt = total_time_internal + 1.0; // 使其大于总时间，不触发中间输出对齐
+         actual_output_dt = total_time_internal + 1.0;
     }
 
-    // 调整dt以精确到达总时间或输出时间点
     if (current_time_internal + dt >= total_time_internal - epsilon) {
         dt = total_time_internal - current_time_internal;
-        if (dt < epsilon / 10.0) dt = 0; // 如果剩余时间非常小，则认为已到达
-    } else if (actual_output_dt > epsilon) { // 仅当有意义的输出间隔时才尝试对齐
-        // 计算下一个理想的输出时间点
+        if (dt < epsilon / 10.0) dt = 0;
+    } else if (actual_output_dt > epsilon) {
         double num_outputs_passed = std::floor(current_time_internal / actual_output_dt + epsilon);
         double next_ideal_output_time = (num_outputs_passed + 1.0) * actual_output_dt;
-
-        if (current_time_internal + dt >= next_ideal_output_time - epsilon) { // 如果当前步会跨过下一个输出点
-            dt = next_ideal_output_time - current_time_internal; // 调整dt以精确到达
-             if (dt < epsilon / 10.0 && next_ideal_output_time < total_time_internal - epsilon) { // 如果调整后的dt太小，且还没到总时间
-                // 尝试跳到下下个输出点，以避免dt过小
-                // （这个逻辑可能需要根据具体需求调整，或者接受小的dt）
-                // next_ideal_output_time = (num_outputs_passed + 2.0) * actual_output_dt;
-                // dt = next_ideal_output_time - current_time_internal;
+        if (current_time_internal + dt >= next_ideal_output_time - epsilon) {
+            dt = next_ideal_output_time - current_time_internal;
+             if (dt < epsilon / 10.0 && next_ideal_output_time < total_time_internal - epsilon) {
+                next_ideal_output_time = (num_outputs_passed + 2.0) * actual_output_dt;
+                dt = next_ideal_output_time - current_time_internal;
              }
-             // 再次检查调整后的dt是否会超出总时间
              if (current_time_internal + dt >= total_time_internal - epsilon) {
                  dt = total_time_internal - current_time_internal;
                  if (dt < epsilon / 10.0) dt = 0;
@@ -1062,126 +1051,104 @@ bool HydroModelCore_cpp::advance_one_step() {
         }
     }
 
-    // 如果计算出的 dt 仍然非常小，但模拟尚未结束，这可能表示卡顿
     if (dt < epsilon / 10.0 && current_time_internal < total_time_internal - epsilon) {
-        if (dt < 0) dt = 0; // 确保dt非负
-        // 卡顿检测：如果dt变得极小，但模拟还没结束，强制结束或警告
-        if (this->last_calculated_dt_internal < epsilon / 100.0 && dt < epsilon / 100.0) { // 连续两次dt极小
-            std::cerr << "C++ WARNING advance_one_step: Calculated dt (" << dt
-                      << ") and previous dt (" << this->last_calculated_dt_internal
-                      << ") are effectively zero at t = " << current_time_internal
-                      << "s, but total_time is " << total_time_internal
-                      << "s. Simulation might be stalled. Forcing current_time to total_time to end." << std::endl;
-            current_time_internal = total_time_internal; // 强制结束
-            dt = 0; // 确保不前进
-        }
+        if (dt < 0) dt = 0;
     }
 
     this->last_calculated_dt_internal = dt;
 
-    if (this->last_calculated_dt_internal > epsilon / 100.0) { // 仅当dt足够大时才执行步骤
-        StateVector U_after_explicit_step;
-        {
-            PROFILE_SCOPE("TimeIntegrator_Step");
+
+    // Stall detection / prevention: 卡顿检测/预防
+    if (this->last_calculated_dt_internal < epsilon / 100.0) { // 如果计算出的dt非常小 // 新增：卡顿检测逻辑
+        if (current_time_internal < total_time_internal - epsilon) { // 但模拟尚未结束
+            std::cerr << "C++ WARNING advance_one_step: Calculated dt is effectively zero (" << this->last_calculated_dt_internal
+                      << ") at t = " << current_time_internal
+                      << "s, but total_time is " << total_time_internal
+                      << "s. Simulation might be stalled. Forcing current_time to total_time to end." << std::endl; // 记录警告信息：dt过小可能导致卡顿，强制结束
+            current_time_internal = total_time_internal; // 强制当前时间等于总时间以结束循环
+        }
+    } // 新增：卡顿检测逻辑结束
+
+    if (this->last_calculated_dt_internal > epsilon / 100.0) {
+        StateVector U_after_explicit_step; // 用于存储显式积分（可能包含摩擦）后的结果
+        try {
             U_after_explicit_step = time_integrator_ptr->step(U_state_all_internal, this->last_calculated_dt_internal, current_time_internal);
+        } catch (const std::exception& e) {
+            std::cerr << "Error during time integration step: " << e.what() << std::endl; throw;
         }
+        // *** 在这里应用内部流量源项 ***
+        StateVector U_after_sources = U_after_explicit_step; // 从显式时间步进后的结果开始
 
-        StateVector U_after_sources = U_after_explicit_step;
-        {
-            PROFILE_SCOPE("InternalFlowSourceTerms");
-            U_after_sources = _apply_internal_flow_source_terms(U_after_sources, this->last_calculated_dt_internal, current_time_internal);
-        }
-        {
-            PROFILE_SCOPE("InternalPointSourceTerms");
-             U_after_sources = _apply_point_sources_internal(U_after_sources, this->last_calculated_dt_internal, current_time_internal);
-        }
-        U_state_all_internal = U_after_sources;
+        // 应用内部线源 (如果存在)
+        U_after_sources = _apply_internal_flow_source_terms(U_after_sources, this->last_calculated_dt_internal, current_time_internal);
 
-        {
-            PROFILE_SCOPE("HandleDryCellsAndUpdateEta");
-            _handle_dry_cells_and_update_eta_internal();
-        }
-    } else if (current_time_internal < total_time_internal - epsilon) {
-         // 如果dt太小但模拟没结束，仅打印警告，但不前进时间或步数
-         // std::cout << "C++ advance_one_step: dt (" << this->last_calculated_dt_internal
-         //           << ") is too small to advance at t = " << current_time_internal << ". Step not taken." << std::endl;
+        // 应用内部点源 (如果存在)
+        U_after_sources = _apply_point_sources_internal(U_after_sources, this->last_calculated_dt_internal, current_time_internal);
+
+        U_state_all_internal = U_after_sources; // 将所有源项应用后的结果赋给内部状态
+        // ******************************
+
+        _handle_dry_cells_and_update_eta_internal(); // 然后处理干湿和更新水位
     }
 
+    const double MAX_PHYSICAL_H = 1000.0; // 假设物理上可能的最大水深是1000米 (根据你的问题调整)
+    const double MAX_PHYSICAL_SPEED = 50.0; // 假设物理上可能的最大流速是50m/s
 
-    // 物理合理性检查 (这部分可以根据需要开启或关闭，或者移到VFR之后)
-    const double MAX_PHYSICAL_H = 1000.0;
-    const double MAX_PHYSICAL_SPEED = 50.0;
     for (size_t i = 0; i < U_state_all_internal.size(); ++i) {
-        bool corrected = false;
+        bool corrected = false; // 标记此单元是否被修正
+        // 检查水深 h
         if (U_state_all_internal[i][0] > MAX_PHYSICAL_H) {
-            // std::cerr << "WARNING (Post-Step Check): Cell " << i << " h=" << U_state_all_internal[i][0] << " > MAX_H. Clamping." << std::endl;
-            U_state_all_internal[i][0] = MAX_PHYSICAL_H; U_state_all_internal[i][1] = 0.0; U_state_all_internal[i][2] = 0.0; corrected = true;
+            std::cerr << "WARNING (Post-Step Check): Cell " << i << " h=" << U_state_all_internal[i][0]
+                      << " exceeded MAX_PHYSICAL_H=" << MAX_PHYSICAL_H << ". Clamping h and zeroing momentum." << std::endl;
+            U_state_all_internal[i][0] = MAX_PHYSICAL_H; // 限制水深
+            U_state_all_internal[i][1] = 0.0; // 清零hu
+            U_state_all_internal[i][2] = 0.0; // 清零hv
+            corrected = true;
         }
         if (U_state_all_internal[i][0] < 0.0 && std::abs(U_state_all_internal[i][0]) > epsilon) {
-             // std::cerr << "WARNING (Post-Step Check): Cell " << i << " h=" << U_state_all_internal[i][0] << " < 0. Setting to 0." << std::endl;
-             U_state_all_internal[i][0] = 0.0; U_state_all_internal[i][1] = 0.0; U_state_all_internal[i][2] = 0.0; corrected = true;
+             std::cerr << "WARNING (Post-Step Check): Cell " << i << " h=" << U_state_all_internal[i][0]
+                       << " is negative. Setting to 0 and zeroing momentum." << std::endl;
+             U_state_all_internal[i][0] = 0.0;
+             U_state_all_internal[i][1] = 0.0;
+             U_state_all_internal[i][2] = 0.0;
+             corrected = true;
         }
-        if (U_state_all_internal[i][0] > min_depth_internal) {
-            double h_chk = U_state_all_internal[i][0]; double u_chk = U_state_all_internal[i][1]/h_chk; double v_chk = U_state_all_internal[i][2]/h_chk;
-            double speed_sq_chk = u_chk*u_chk + v_chk*v_chk;
-            if (speed_sq_chk > MAX_PHYSICAL_SPEED * MAX_PHYSICAL_SPEED) {
-                // if (!corrected) std::cerr << "WARNING (Post-Step Check): Cell " << i << " speed > MAX_SPEED. Clamping." << std::endl;
-                double scale = MAX_PHYSICAL_SPEED / std::sqrt(speed_sq_chk);
-                U_state_all_internal[i][1] *= scale; U_state_all_internal[i][2] *= scale;
+
+        // 如果水深经过修正或者本身就有效，再检查流速
+        if (U_state_all_internal[i][0] > min_depth_internal) { // 只对湿单元检查流速
+            double h_check = U_state_all_internal[i][0];
+            double u_check = U_state_all_internal[i][1] / h_check;
+            double v_check = U_state_all_internal[i][2] / h_check;
+            double speed_check_sq = u_check * u_check + v_check * v_check;
+            if (speed_check_sq > MAX_PHYSICAL_SPEED * MAX_PHYSICAL_SPEED) {
+                if (!corrected) { /* ... print warning ... */ }
+                double scale = MAX_PHYSICAL_SPEED / std::sqrt(speed_check_sq);
+                U_state_all_internal[i][1] *= scale; // 缩放hu
+                U_state_all_internal[i][2] *= scale; // 缩放hv
             }
-        } else if (U_state_all_internal[i][0] < min_depth_internal) {
+        } else if (U_state_all_internal[i][0] < min_depth_internal) { // 对于干/极浅单元，确保动量为零
              if (std::abs(U_state_all_internal[i][1]) > epsilon || std::abs(U_state_all_internal[i][2]) > epsilon) {
-                 U_state_all_internal[i][1] = 0.0; U_state_all_internal[i][2] = 0.0;
+                 /* ... print warning (optional) ... */
+                 U_state_all_internal[i][1] = 0.0;
+                 U_state_all_internal[i][2] = 0.0;
              }
         }
     }
-
-    // 仅当dt有效时才更新时间和步数
-    if (this->last_calculated_dt_internal > epsilon / 100.0) {
-        current_time_internal += this->last_calculated_dt_internal;
-        step_count_internal++;
-    }
-
-    bool simulation_should_continue = !is_simulation_finished();
-
-    if (!simulation_should_continue) { // 如果模拟在本步之后结束了
-        // 检查是否已经打印过总结，避免重复打印
-        // (如果 advance_one_step 可能在结束后被意外多调用一次)
-        // 可以用一个成员变量标记，或者更简单地，依赖 Profiler::reset_summary()
-        #ifdef ENABLE_PROFILING
-            // Profiler::results 是 Profiler 命名空间下的全局变量
-            if (!Profiler::results.empty()) { // 仅当有分析结果时才打印和重置
-                std::cout << "\nINFO: Simulation finished based on is_simulation_finished() in advance_one_step." << std::endl;
-                std::cout << "Final time: " << current_time_internal << ", Total steps: " << step_count_internal << std::endl;
-                Profiler::print_summary();
-                Profiler::reset_summary(); // 重置以便下次Python脚本运行（如果适用）或单元测试
-            }
-        #else
-            // 如果分析未启用，也打印一个结束信息
-            std::cout << "\nINFO: Simulation finished based on is_simulation_finished() in advance_one_step (profiling disabled)." << std::endl;
-            std::cout << "Final time: " << current_time_internal << ", Total steps: " << step_count_internal << std::endl;
-        #endif
-    }
-    return simulation_should_continue; // 返回模拟是否应该继续
+    current_time_internal += this->last_calculated_dt_internal;
+    step_count_internal++;
+    return !is_simulation_finished();
 }
 
-void HydroModelCore_cpp::run_simulation_to_end() {
-    PROFILE_FUNCTION(); // 记录整个模拟循环的总时间
-    std::cout << "C++ Simulation starting (via run_simulation_to_end)..." << std::endl;
-    bool should_continue = true;
-    while(should_continue) {
-        should_continue = advance_one_step(); // advance_one_step 内部会在结束时打印
-        if (step_count_internal % 100 == 0 && should_continue) { // 每100步打印进度 (且模拟未结束)
-            std::cout << "  Progress (run_simulation_to_end): Step " << step_count_internal
-                      << ", Time: " << current_time_internal
-                      << ", dt: " << get_last_dt() << std::endl;
+void HydroModelCore_cpp::run_simulation_to_end() { // 执行整个模拟循环实现
+    std::cout << "C++ Simulation starting..." << std::endl; // 打印开始信息
+    while(advance_one_step()) { // 循环执行单步积分
+        if (step_count_internal % 100 == 0) { // 每100步打印进度
+            std::cout << "  Progress: Step " << step_count_internal << ", Time: " << current_time_internal
+                      << ", dt: " << get_last_dt() << std::endl; // 打印进度和dt
         }
     }
-    // advance_one_step 应该已经在最后一次调用时打印了总结
-    // 因此这里不需要再次调用 Profiler::print_summary()
-    // 只需打印一个总的完成信息
-    std::cout << "C++ Simulation finished (via run_simulation_to_end) call. Final state reached at time "
-              << current_time_internal << " after " << step_count_internal << " steps." << std::endl;
+    std::cout << "C++ Simulation finished at time " << current_time_internal
+              << " after " << step_count_internal << " steps." << std::endl; // 打印结束信息
 } // 结束函数
 
 } // namespace HydroCore

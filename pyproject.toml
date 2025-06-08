@@ -1,15 +1,4 @@
-# pyproject.toml
-
 [build-system]
 requires = [
-    "setuptools>=61.0",
-    "scikit-build>=0.12",
-    "cmake>=3.12",
-    "ninja"
 ]
 build-backend = "setuptools.build_meta"
-
-# 我们将把 [project] 部分注释掉或删除，因为这些信息将移至 setup.py
-# [project]
-# name = "hydro_model"
-# version = "0.1.0"

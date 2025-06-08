@@ -1,18 +1,39 @@
 # setup.py
-# 最终版本，专为 'python setup.py build_ext --inplace' 设计
 from skbuild import setup
-from setuptools import find_packages
+import os # 导入 os 模块
 
 setup(
-    # --- 提供包结构信息，这是让 --inplace 找到目标的关键 ---
-    # `find_packages` 会找到 `src/hydro_model`
-    packages=find_packages(where="src"),
+    name="hydro_model_pkg",
+    version="0.1.0",
+    author="wsl",
+    description="A 2D Hydrodynamic Model with a C++ core",
+    license="MIT",
 
-    # `package_dir` 告诉 setuptools，这些包的根目录在 'src' 下
-    package_dir={"": "src"},
+    cmake_source_dir='src_cpp/',
 
-    # --- C++/scikit-build 配置 ---
-    # `cmake_install_dir` 明确告诉 scikit-build，编译产物应该属于 'hydro_model' 包的一部分。
-    # 当 --inplace 运行时，它会把产物复制到 src/hydro_model/
-    cmake_install_dir="src/hydro_model",
+    # 告诉 setuptools 编译后的 C++ 扩展 (由 CMake install 安装的)
+    # 应该被认为是包的一部分，并且位于项目的根目录下。
+    # cmake_install_dir 的路径是相对于最终包的安装位置的。
+    # 对于一个直接导入的 .pyd 文件，我们希望它在顶层。
+    # scikit-build 会处理将 _skbuild/<platform>/cmake-install/ 的内容
+    # 映射到这个相对路径。
+    cmake_install_dir='.',  # <--- 新增或确认这一行
+
+    # packages 和 py_modules 保持为空，因为我们只依赖 CMake 构建的 C++ 扩展
+    packages=[],
+    py_modules=[],
+
+    cmake_args=['-DCMAKE_VERBOSE_MAKEFILE:BOOL=ON'],
+
+    install_requires=[
+        'numpy',
+        'pybind11>=2.6',
+        'scipy',
+        'matplotlib',
+        'pandas',
+        'pykrige',
+        'PyYAML',
+        'meshio'
+    ],
+    python_requires='>=3.8',
 )
