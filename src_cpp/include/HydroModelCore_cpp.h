@@ -19,6 +19,7 @@
 #include "Reconstruction_cpp.h" // 重构器
 #include "TimeIntegrator_cpp.h" // 时间积分器
 #include "BoundaryConditionHandler_cpp.h" // 边界条件处理器
+#include "Profiler.h" // <--- 新增包含
 
 namespace HydroCore { // HydroCore命名空间开始
 
@@ -71,6 +72,8 @@ public: // 公有成员
         const std::map<int, std::vector<TimeseriesPoint_cpp>>& waterlevel_ts_data,
         const std::map<int, std::vector<TimeseriesPoint_cpp>>& discharge_ts_data
     );
+
+    void print_performance_summary() const; // <--- 新增：打印性能摘要的方法
 
     double get_gravity() const { return gravity_internal; } // 获取重力加速度
     double get_min_depth() const { return min_depth_internal; } // 获取最小水深

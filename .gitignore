@@ -1,46 +1,77 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.egg-info/
-dist/
-build/ # 通常Python的build目录也应该忽略，但如果你用scikit-build，它可能在src_cpp下创建build
+# .gitignore
 
-# C++/CMake build files (根据你的CMake输出目录调整)
-src_cpp/build/ # 如果你的CMake构建目录在src_cpp下
-src_cpp/cmake-build-*/ # CLion的默认构建目录模式
+# -------------------------------------------------------------------
+# 忽略所有编译/构建产物
+# -------------------------------------------------------------------
+
+# Python 构建产物
+build/
+dist/
+*.egg-info/
+
+# scikit-build 临时目录
+_skbuild/
+
+# CLion 构建目录
+cmake-build-*/
+
+# Visual Studio 构建目录
+out/
+.vs/
+
+# 通用 C/C++ 编译产物
 *.so
 *.dll
 *.lib
 *.exe
 *.o
 *.a
+*.pyd
 
-# IDE / Editor specific
-.idea/
-.vscode/
-*.swp
-*~
+# -------------------------------------------------------------------
+# 忽略环境和IDE配置
+# -------------------------------------------------------------------
 
-# Output files
-output/
-output_*/
-simulation_output/
-meshio_test_output/
-论文/
-tests/
-hydro_model_pkg.egg-info/
-算例/
-_skbuild
-src_cpp/cmake-build-debug/
-
-# Virtual environments
+# Python 虚拟环境
 venv/
 .venv/
 env/
 .env/
 
-# OS generated files
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# JetBrains IDE (PyCharm, CLion)
+.idea/
+*.iml
+
+# Visual Studio Code
+.vscode/
+
+# 其它编辑器临时文件
+*.swp
+*~
+
+# -------------------------------------------------------------------
+# 忽略项目特定的输出和文档
+# -------------------------------------------------------------------
+
+# 模拟输出结果
+output/
+
+# 日志文件
+*.log
+
+# 个人文档（除非你希望团队共享，否则建议忽略）
+# 如果这些文件夹需要版本控制，请从下面删除它们
+论文/
+算例/
+CMakeSettings.json
+
+
+# -------------------------------------------------------------------
+# 忽略操作系统生成的文件
+# -------------------------------------------------------------------
 .DS_Store
 Thumbs.db

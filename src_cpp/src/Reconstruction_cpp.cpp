@@ -1,5 +1,6 @@
 ﻿// src_cpp/src/Reconstruction_cpp.cpp
 #include "Reconstruction_cpp.h" // 包含对应的头文件
+#include "Profiler.h"
 #include <stdexcept> // 包含标准异常
 #include <iostream> // 包含输入输出流 (用于调试)
 
@@ -41,6 +42,7 @@ const std::array<std::array<double, 2>, 3>& Reconstruction_cpp::get_gradient_for
 }
 std::vector<PrimitiveVars_cpp> Reconstruction_cpp::get_all_primitive_states( // 获取所有原始状态实现
     const std::vector<std::array<double, 3>>& U_state_all) const {
+    PROFILE_FUNCTION(); // <--- 添加此行
     std::vector<PrimitiveVars_cpp> W_state_all(U_state_all.size()); // 初始化原始状态数组
     for (size_t i = 0; i < U_state_all.size(); ++i) { // 遍历所有单元
         W_state_all[i] = conserved_to_primitive(U_state_all[i]); // 转换并存储
@@ -49,6 +51,7 @@ std::vector<PrimitiveVars_cpp> Reconstruction_cpp::get_all_primitive_states( // 
 } // 结束方法
 
 void Reconstruction_cpp::prepare_for_step(const std::vector<std::array<double, 3>>& U_state_all) { // 准备步骤实现
+    PROFILE_FUNCTION();
     if (scheme_internal == ReconstructionScheme_cpp::FIRST_ORDER) { // 如果是一阶方案
         gradients_primitive.clear(); // 清空梯度 (或设为全零，如果后续逻辑依赖其大小)
         return; // 直接返回
@@ -86,6 +89,7 @@ void Reconstruction_cpp::prepare_for_step(const std::vector<std::array<double, 3
 
 std::vector<std::array<std::array<double, 2>, 3>> Reconstruction_cpp::calculate_gradients_green_gauss( // Green-Gauss梯度计算实现
     const std::vector<PrimitiveVars_cpp>& W_state_all) const {
+    PROFILE_FUNCTION(); // <--- 添加此行
     size_t num_cells = mesh->cells.size(); // 获取单元数量
     // 定义一个默认初始化的 value_type (所有 double 成员将为 0.0)
     std::array<std::array<double, 2>, 3> default_gradient_value = {}; // 这是一个 std::array<std::array<double,2>,3> 类型的对象，所有元素为0
@@ -136,6 +140,7 @@ std::vector<std::array<std::array<double, 2>, 3>> Reconstruction_cpp::calculate_
 std::vector<std::array<double, 3>> Reconstruction_cpp::calculate_barth_jespersen_limiters( // Barth-Jespersen限制器计算实现
     const std::vector<PrimitiveVars_cpp>& W_state_all,
     const std::vector<std::array<std::array<double, 2>, 3>>& unlimited_gradients_all) const {
+    PROFILE_FUNCTION(); // <--- 添加此行
     size_t num_cells = mesh->cells.size(); // 获取单元数量
     std::vector<std::array<double, 3>> limiters_phi_all(num_cells, {1.0, 1.0, 1.0}); // 初始化限制器为1 (无限制)
 

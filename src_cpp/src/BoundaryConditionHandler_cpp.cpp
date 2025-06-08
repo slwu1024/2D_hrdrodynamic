@@ -1,6 +1,7 @@
 ﻿// src_cpp/src/BoundaryConditionHandler_cpp.cpp
 #include "BoundaryConditionHandler_cpp.h" // 包含对应的头文件
 #include "TimeIntegrator_cpp.h"
+#include "Profiler.h"
 #include <stdexcept> // 包含标准异常
 #include <iostream>  // 包含输入输出流 (用于调试)
 #include <algorithm> // 包含算法如 std::lower_bound, std::sort
@@ -217,153 +218,114 @@ std::array<double, 3> BoundaryConditionHandler_cpp::handle_waterlevel_boundary( 
 std::array<double, 3> BoundaryConditionHandler_cpp::handle_total_discharge_boundary(
     const StateVector& U_state_all,
     int cell_L_id,
-    const PrimitiveVars_cpp& W_L_flux, // 静水重构后的左侧界面状态 {h_L_star, u_L, v_L}
-    const HalfEdge_cpp& he,            // 边界半边，其 he.normal 指向外部
-    double target_Q_total_from_csv,    // 从CSV读取的流量值 (正代表入流，负代表出流)
-    int original_segment_id_for_length, // 用于查找边界长度的原始ID
-    const BoundaryDefinition_cpp& bc_def_for_hint
-) const {
-    // bool enable_detailed_debug = (original_segment_id_for_length == 5); // 只对我们的目标线段进行详细打印
-    bool enable_detailed_debug = true; // <--- 修改: 强制启用调试打印
+    const PrimitiveVars_cpp& W_L_flux,
+    const HalfEdge_cpp& he,
+    double target_Q_total_from_csv,
+    int original_segment_id_for_length,
+    const BoundaryDefinition_cpp& bc_def_for_hint) const {
 
-    if (enable_detailed_debug) {
-        std::cout << "[DEBUG_HANDLE_TOTAL_DISCHARGE_ENTRY] HE_ID: " << he.id << ", Cell_L_ID: " << cell_L_id
-                  << ", OrigSegID: " << original_segment_id_for_length << std::endl;
-        std::cout << "  Target_Q_CSV: " << target_Q_total_from_csv << std::endl;
-        std::cout << "  W_L_flux (static recon from calculate_boundary_flux): h=" << W_L_flux.h
-                  << ", u=" << W_L_flux.u << ", v=" << W_L_flux.v << std::endl;
-        std::cout << "  he.normal: (" << he.normal[0] << "," << he.normal[1] << ")" << std::endl;
-        if (bc_def_for_hint.has_flow_direction_hint) {
-            std::cout << "  FlowHint: (" << bc_def_for_hint.flow_direction_hint_x << "," << bc_def_for_hint.flow_direction_hint_y << ")" << std::endl;
-        }
-    }
+    bool enable_detailed_debug = true; // 强制开启调试
 
-    // --- 1. 计算单宽流量 qn_target_physical ---
-    double total_length_marker = 0.0;
+    // ... (获取 total_length_for_this_marker 的代码不变) ...
+    double total_length_for_this_marker = 0.0;
     auto it_len = marker_total_lengths_internal.find(original_segment_id_for_length);
     if (it_len != marker_total_lengths_internal.end()) {
-        total_length_marker = it_len->second;
+        total_length_for_this_marker = it_len->second;
+    }
+    if (total_length_for_this_marker < epsilon) {
+        if (std::abs(target_Q_total_from_csv) > epsilon) {
+             std::cerr << "Warning (total_discharge_bc): Total length for marker "
+                       << original_segment_id_for_length << " is near zero (" << total_length_for_this_marker
+                       << "), but target_Q is " << target_Q_total_from_csv
+                       << ". Treating as wall for HE_ID " << he.id << "." << std::endl;
+        }
+        return handle_wall_boundary(W_L_flux, he);
     }
 
-    if (enable_detailed_debug) {
-        std::cout << "  TotalLengthForMarker (OrigSegID " << original_segment_id_for_length << "): " << total_length_marker << std::endl;
-    }
+    double qn_physical = target_Q_total_from_csv / total_length_for_this_marker;
 
-    // 如果边界长度过小，无法分配流量，则视为墙体
-    if (total_length_marker < epsilon) {
-        // std::cerr << "Warning (total_discharge_bc): Total length for marker "
-        //           << original_segment_id_for_length << " is near zero. Treating as wall." << std::endl;
-        return handle_wall_boundary(W_L_flux, he); // 长度为0，按墙处理
-    }
+    PrimitiveVars_cpp W_ghost;
+    bool is_physical_inflow = qn_physical > epsilon;
+    bool internal_is_dryish = W_L_flux.h < min_depth_internal * 1.5;
 
-    // qn_target_physical: 用户期望的物理法向单宽流量。
-    // 正值表示入流 (水流进入计算域)，负值表示出流。
-    double qn_target_physical = target_Q_total_from_csv / total_length_marker;
-    if (enable_detailed_debug) {
-        std::cout << "  qn_target_physical: " << qn_target_physical << std::endl;
-    }
-
-    // --- 2. 初始化鬼单元状态 ---
-    PrimitiveVars_cpp W_ghost_final; // 最终用于HLLC的鬼单元原始变量
-
-    // --- 3. 判断入流且内部接近干涸的情况 ---
-    bool is_inflow = qn_target_physical > epsilon; // 判断是否为入流
-    // W_L_flux.h 是经过静水重构后的内部界面水深，用它判断内部是否干
-    bool internal_is_dry_or_very_shallow = (W_L_flux.h < min_depth_internal * 1.5); // 可以调整这个阈值，比如 min_depth_internal * 2.0
-    if (enable_detailed_debug) {
-        std::cout << "  is_inflow: " << is_inflow << ", internal_is_dry_or_very_shallow: " << internal_is_dry_or_very_shallow << std::endl;
-    }
-    if (is_inflow && internal_is_dry_or_very_shallow) { // 情况 A
-        if (enable_detailed_debug) std::cout << "  Branch A: Inflow to dry/shallow." << std::endl;
-        double qn_inflow_magnitude = std::abs(qn_target_physical);
-        if (qn_inflow_magnitude < epsilon) {
-            W_ghost_final.h = 0.0; W_ghost_final.u = 0.0; W_ghost_final.v = 0.0;
+    // --- 鬼单元水深设定 (与最新版本一致，这部分应该是合理的) ---
+    if (is_physical_inflow) {
+        double qn_abs = std::abs(qn_physical);
+        if (qn_abs < epsilon) {
+            W_ghost.h = 0.0;
         } else {
-            double h_critical = std::cbrt((qn_inflow_magnitude * qn_inflow_magnitude) / g_internal);
-            W_ghost_final.h = std::max(h_critical, min_depth_internal);
-            double un_ghost_physical;
-            if (W_ghost_final.h < epsilon) {
-                un_ghost_physical = 0.0; W_ghost_final.h = 0.0;
-            } else {
-                 un_ghost_physical = qn_inflow_magnitude / W_ghost_final.h;
-            }
-            // --- 调试打印 un_ghost_projection_on_normal 的计算 ---
-            double un_ghost_projection_on_normal = -un_ghost_physical; // 默认
-            if (bc_def_for_hint.has_flow_direction_hint) {
-                double dot_product = bc_def_for_hint.flow_direction_hint_x * he.normal[0] +
-                                     bc_def_for_hint.flow_direction_hint_y * he.normal[1];
-                if (enable_detailed_debug) std::cout << "    Hint Dot Product: " << dot_product << std::endl;
-                if (dot_product >= 0) { // 流量提示与法向量同向
-                    un_ghost_projection_on_normal = un_ghost_physical;
-                } else { // 流量提示与法向量反向
-                    un_ghost_projection_on_normal = -un_ghost_physical;
-                }
-            }
-            if (enable_detailed_debug) std::cout << "    un_ghost_physical: " << un_ghost_physical << ", un_ghost_projection_on_normal: " << un_ghost_projection_on_normal << std::endl;
-            // --- 结束调试 ---
-            double ut_ghost_projection_on_tangent = 0.0;
-            W_ghost_final.u = un_ghost_projection_on_normal * he.normal[0] - ut_ghost_projection_on_tangent * he.normal[1];
-            W_ghost_final.v = un_ghost_projection_on_normal * he.normal[1] + ut_ghost_projection_on_tangent * he.normal[0];
+            double h_characteristic_for_inflow = std::cbrt((qn_abs * qn_abs) / g_internal);
+            W_ghost.h = std::max(h_characteristic_for_inflow, min_depth_internal * 5.0);
         }
-    } else { // 情况 B
-        if (enable_detailed_debug) std::cout << "  Branch B: Outflow or inflow to wet." << std::endl;
-        double h_ghost_calc = W_L_flux.h; // 对入流到湿区和出流都用 W_L_flux.h 作为基础
-        W_ghost_final.h = std::max(0.0, h_ghost_calc);
-        double un_ghost_physical;
-        double h_ghost_for_vel_calc = std::max(W_ghost_final.h, epsilon);
-        if (std::abs(qn_target_physical) < epsilon && W_ghost_final.h < min_depth_internal) {
-            un_ghost_physical = 0.0; W_ghost_final.h = 0.0;
-        } else if (h_ghost_for_vel_calc < epsilon && std::abs(qn_target_physical) > epsilon) {
-            if (enable_detailed_debug) std::cout << "  WARN: h_ghost is zero but q_n non-zero. Treating as wall." << std::endl;
-            return handle_wall_boundary(W_L_flux, he);
-        } else {
-            un_ghost_physical = qn_target_physical / h_ghost_for_vel_calc;
-        }
-        // ... (速度限制逻辑不变) ...
-        const double MAX_ABS_UN_PHYSICAL = 20.0;
-        if (std::abs(un_ghost_physical) > MAX_ABS_UN_PHYSICAL) {
-            if (enable_detailed_debug) std::cout << "    WARN: un_ghost_physical " << un_ghost_physical << " clamped." << std::endl;
-            un_ghost_physical = std::copysign(MAX_ABS_UN_PHYSICAL, un_ghost_physical);
-        }
-        // --- 调试打印 un_ghost_projection_on_normal 的计算 ---
-        double un_ghost_projection_on_normal = -un_ghost_physical; // 默认
-        if (bc_def_for_hint.has_flow_direction_hint) {
-            double dot_product = bc_def_for_hint.flow_direction_hint_x * he.normal[0] +
-                                 bc_def_for_hint.flow_direction_hint_y * he.normal[1];
-            if (enable_detailed_debug) std::cout << "    Hint Dot Product: " << dot_product << std::endl;
-            if (dot_product >= 0) {
-                un_ghost_projection_on_normal = un_ghost_physical;
-            } else {
-                un_ghost_projection_on_normal = -un_ghost_physical;
-            }
-        }
-        if (enable_detailed_debug) std::cout << "    un_ghost_physical: " << un_ghost_physical << ", un_ghost_projection_on_normal: " << un_ghost_projection_on_normal << std::endl;
-        // --- 结束调试 ---
-        double ut_ghost_projection_on_tangent = -W_L_flux.u * he.normal[1] + W_L_flux.v * he.normal[0];
-        W_ghost_final.u = un_ghost_projection_on_normal * he.normal[0] - ut_ghost_projection_on_tangent * he.normal[1];
-        W_ghost_final.v = un_ghost_projection_on_normal * he.normal[1] + ut_ghost_projection_on_tangent * he.normal[0];
+    } else {
+        W_ghost.h = std::max(0.0, W_L_flux.h);
+    }
+    if (W_ghost.h < min_depth_internal / 10.0) {
+        W_ghost.h = 0.0;
+    }
+    // --- 水深设定结束 ---
+
+    double h_for_vel_calc = std::max(W_ghost.h, epsilon);
+    double vn_magnitude_abs = 0.0;
+    if (W_ghost.h > epsilon) { // 只有在水深大于epsilon时才计算速度大小
+        vn_magnitude_abs = std::abs(qn_physical / h_for_vel_calc);
     }
 
-    if (W_ghost_final.h < 0.0) W_ghost_final.h = 0.0;
-    if (W_ghost_final.h < min_depth_internal) {
-        W_ghost_final.u = 0.0; W_ghost_final.v = 0.0;
+    // --- 尝试恢复“旧的”法向速度符号逻辑 ---
+    // 这个逻辑的目标是让 un_ghost_projection_on_normal 对于入流时为负 (如你之前的调试输出)
+    double un_ghost_projection_on_normal_candidate;
+
+    if (W_ghost.h < epsilon) { // 如果鬼单元干
+        un_ghost_projection_on_normal_candidate = 0.0;
+    } else {
+        if (is_physical_inflow) {
+            un_ghost_projection_on_normal_candidate = -vn_magnitude_abs; // <--- 入流时，投影为负
+        } else { // 出流 (qn_physical < 0) 或静止
+            // 对于出流，qn_physical 为负，vn_magnitude_abs 为正
+            // 如果希望投影也为负 (表示水从N界面流向鬼区域，与N方向相反)
+            // 或者为正 (表示水从鬼区域流向N界面，与N方向相同，但流量为负)
+            // 为了匹配你之前的 Fh = -qn_physical (qn为负时Fh为正)，可能投影也是负的
+            un_ghost_projection_on_normal_candidate = -vn_magnitude_abs; // 假设出流时也用负投影（待验证）
+                                                                       // 或者直接用 qn_physical / h_for_vel_calc，它本身会是负值
+                                                                       // un_ghost_projection_on_normal_candidate = qn_physical / h_for_vel_calc;
+        }
     }
 
-    if (enable_detailed_debug) {
-        std::cout << "  Final W_ghost_final for HLLC: h=" << W_ghost_final.h
-                  << ", u=" << W_ghost_final.u << ", v=" << W_ghost_final.v << std::endl;
-        std::cout << "  Input to HLLC (WL, WR, N): WL(h,u,v)=(" << W_L_flux.h << "," << W_L_flux.u << "," << W_L_flux.v << ")"
-                  << " WR(h,u,v)=(" << W_ghost_final.h << "," << W_ghost_final.u << "," << W_ghost_final.v << ")"
-                  << " Normal=(" << he.normal[0] << "," << he.normal[1] << ")" << std::endl;
+    // (可选) 应用 flow_direction_hint 来调整或确认 un_ghost_projection_on_normal_candidate 的符号
+    // 这里暂时省略，以简化和集中测试核心符号逻辑
+    // 如果你之前的版本有复杂的hint逻辑影响法向速度符号，需要在这里恢复
+
+    double final_un_ghost_projection_on_normal = un_ghost_projection_on_normal_candidate;
+
+    // 限制速度
+    const double MAX_ABS_UN_G = 25.0;
+    if (std::abs(final_un_ghost_projection_on_normal) > MAX_ABS_UN_G) {
+        if (enable_detailed_debug)
+             std::cout << "  WARN: final_un_ghost_projection_on_normal (before clamp) "
+                       << final_un_ghost_projection_on_normal << " (orig mag: " << vn_magnitude_abs << ")"
+                       << " clamped to " << MAX_ABS_UN_G << std::endl;
+        final_un_ghost_projection_on_normal = std::copysign(MAX_ABS_UN_G, final_un_ghost_projection_on_normal);
     }
 
-    std::array<double, 3> flux_result = flux_calculator_ptr_internal->calculate_hllc_flux(W_L_flux, W_ghost_final, he.normal);
 
-    if (enable_detailed_debug) {
-        std::cout << "  HLLC Flux Result (Cartesian): Fh=" << flux_result[0]
-                  << ", Fhu=" << flux_result[1] << ", Fhv=" << flux_result[2] << std::endl;
+    double vt_g_on_he_tangent;
+    if (is_physical_inflow && internal_is_dryish) {
+        vt_g_on_he_tangent = 0.0;
+    } else {
+        vt_g_on_he_tangent = -W_L_flux.u * he.normal[1] + W_L_flux.v * he.normal[0];
     }
-    return flux_result;
+
+    if (W_ghost.h < min_depth_internal) {
+        final_un_ghost_projection_on_normal = 0.0;
+        vt_g_on_he_tangent = 0.0;
+    }
+
+    W_ghost.u = final_un_ghost_projection_on_normal * he.normal[0] - vt_g_on_he_tangent * he.normal[1];
+    W_ghost.v = final_un_ghost_projection_on_normal * he.normal[1] + vt_g_on_he_tangent * he.normal[0];
+
+
+
+    return flux_calculator_ptr_internal->calculate_hllc_flux(W_L_flux, W_ghost, he.normal);
 }
 
 
@@ -373,6 +335,8 @@ std::array<double, 3> BoundaryConditionHandler_cpp::calculate_boundary_flux( // 
     const HalfEdge_cpp& he,          // 当前边界半边
     double time_current              // 当前时间
     ) const { // const 成员函数
+
+
 
     auto it_def = bc_definitions_internal.find(he.boundary_marker); // 查找边界标记对应的定义
     BoundaryDefinition_cpp bc_def; // 声明边界定义对象
@@ -387,21 +351,7 @@ std::array<double, 3> BoundaryConditionHandler_cpp::calculate_boundary_flux( // 
             bc_def.type = BoundaryType_cpp::WALL; // 默认为墙体类型
         } // 结束默认查找
     } // 结束定义查找
-    // --- 添加调试打印：检查特定边界标记 ---
-    if (he.boundary_marker == 10) { // 仅在早期且标记为10时打印
-        std::cout << "[DEBUG_BC_FLUX_ENTRY] Time: " << time_current << ", HE_ID: " << he.id
-                  << ", Cell_L_ID: " << cell_L_id
-                  << ", OrigSegID: " << he.original_poly_segment_id // 期望是 5
-                  << ", Marker: " << he.boundary_marker           // 期望是 10
-                  << ", Normal: (" << he.normal[0] << "," << he.normal[1] << ")"
-                  << ", MidPoint: (" << he.mid_point[0] << "," << he.mid_point[1] << ")"
-                  << std::endl;
-        // 打印调用此函数时的左单元状态
-        std::cout << "  Cell_L U(h,hu,hv) for BC_FLUX_ENTRY: " << U_state_all[cell_L_id][0] << ", "
-                  << U_state_all[cell_L_id][1] << ", "
-                  << U_state_all[cell_L_id][2] << std::endl;
-    }
-    // --- 调试打印结束 ---
+
 
     auto [W_L_recons_iface, _ /* W_R is not used for boundary */] = // 获取重构状态
         reconstruction_ptr_internal->get_reconstructed_interface_states( // 获取重构状态
@@ -435,19 +385,14 @@ std::array<double, 3> BoundaryConditionHandler_cpp::calculate_boundary_flux( // 
               std::array<double, 2> grad_eta_L = {grad_W_L[0][0] + cell_L_ptr->b_slope_x, grad_W_L[0][1] + cell_L_ptr->b_slope_y}; // 左单元水位梯度
               std::array<double, 2> vec_L_to_face = {he.mid_point[0] - cell_L_ptr->centroid[0], he.mid_point[1] - cell_L_ptr->centroid[1]}; // 左单元到界面向量
               eta_L_at_face += grad_eta_L[0] * vec_L_to_face[0] + grad_eta_L[1] * vec_L_to_face[1]; // 外插得到界面左侧水位
-         } catch (const std::exception& e) { // 捕获异常 (例如梯度未准备好)
+         } catch (const std::exception&) { // 捕获异常 (例如梯度未准备好)
             gradients_available = false; // 标记梯度不可用
          }
     } // 结束高阶外插
 
     double h_L_star = std::max(0.0, eta_L_at_face - z_face); // 计算静水重构的界面左侧水深
     PrimitiveVars_cpp W_L_flux = {h_L_star, W_L_recons_iface.u, W_L_recons_iface.v}; // 使用h_L_star和重构的速度
-    // --- 添加调试打印：W_L_flux ---
-    if (he.boundary_marker == 10 && time_current < 0.1) {
-        std::cout << "  [DEBUG_BC_FLUX_WLFLUX] W_L_flux (input to specific BC handler): h=" << W_L_flux.h
-                  << ", u=" << W_L_flux.u << ", v=" << W_L_flux.v << std::endl;
-    }
-    // --- 调试打印结束 ---
+
     std::array<double, 3> numerical_flux_cartesian_result; // 用于存储结果
 
 
@@ -469,12 +414,7 @@ std::array<double, 3> BoundaryConditionHandler_cpp::calculate_boundary_flux( // 
         }
         case BoundaryType_cpp::TOTAL_DISCHARGE: { // 注意这里枚举名已改为 TOTAL_DISCHARGE
             double target_Q = get_timeseries_value(he.original_poly_segment_id, time_current, BoundaryType_cpp::TOTAL_DISCHARGE);
-            // --- 添加调试打印：target_Q ---
-            if (he.boundary_marker == 10 && time_current < 0.1) {
-                 std::cout << "  [DEBUG_BC_FLUX_TARGETQ] Target_Q from timeseries for OrigSegID "
-                           << he.original_poly_segment_id << ": " << target_Q << std::endl;
-            }
-            // --- 调试打印结束 ---
+
             if (std::isnan(target_Q)) {
                 numerical_flux_cartesian_result = handle_wall_boundary(W_L_flux, he);
             } else {
@@ -490,11 +430,7 @@ std::array<double, 3> BoundaryConditionHandler_cpp::calculate_boundary_flux( // 
             numerical_flux_cartesian_result = handle_wall_boundary(W_L_flux, he);
     }
 
-    // --- 添加调试打印：最终从边界条件处理器返回的通量 ---
-    if (he.boundary_marker == 10 && time_current < 0.1) {
-        std::cout << "  [DEBUG_BC_FLUX_RESULT] Final Flux (Cartesian) for HE_ID " << he.id << ": Fh=" << numerical_flux_cartesian_result[0]
-                  << ", Fhu=" << numerical_flux_cartesian_result[1] << ", Fhv=" << numerical_flux_cartesian_result[2] << std::endl;
-    }
+
     // --- 调试打印结束 ---
     return numerical_flux_cartesian_result;
 } // 结束方法

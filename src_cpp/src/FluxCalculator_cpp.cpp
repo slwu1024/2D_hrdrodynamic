@@ -1,5 +1,6 @@
 ﻿// src_cpp/src/FluxCalculator_cpp.cpp
 #include "FluxCalculator_cpp.h" // 包含对应的头文件
+#include "Profiler.h"
 #include <iostream> // 包含输入输出流
 #include <iomanip> // 为了 std::fixed 和 std::setprecision
 
@@ -46,6 +47,8 @@ std::array<double, 3> FluxCalculator_cpp::calculate_hllc_flux(
     const PrimitiveVars_cpp& W_R_param, // 修改：参数名
     const std::array<double, 2>& normal_vec
 ) {
+
+    // PROFILE_FUNCTION();
 
 
     PrimitiveVars_cpp W_L = W_L_param; // 拷贝一份输入参数，以便修改
