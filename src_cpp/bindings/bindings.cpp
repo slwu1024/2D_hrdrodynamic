@@ -209,6 +209,9 @@ PYBIND11_MODULE(hydro_model_cpp, m) { // 定义Python模块，名称为 hydro_mo
     py::class_<HydroModelCore_cpp>(m, "HydroModelCore_cpp") // 绑定 HydroModelCore_cpp 类
         .def(py::init<>()) // 绑定无参构造函数
 
+        // --- 新增：绑定 set_num_threads 方法 ---
+        .def("set_num_threads", &HydroModelCore_cpp::set_num_threads, "Sets the number of threads for OpenMP parallel regions.")
+
         .def("initialize_model_from_files", &HydroModelCore_cpp::initialize_model_from_files, // 绑定核心初始化方法
             py::arg("node_filepath"), py::arg("cell_filepath"), py::arg("edge_filepath"), // 文件路径参数
             py::arg("cell_manning_values"), // 曼宁值列表参数

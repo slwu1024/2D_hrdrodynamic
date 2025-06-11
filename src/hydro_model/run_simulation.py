@@ -80,6 +80,11 @@ def get_parameters_from_config(config_data):
     params['output_dt'] = float(sc_conf.get('output_dt', 1.0)) # 输出时间间隔
     params['cfl_number'] = float(sc_conf.get('cfl_number', 0.5)) # CFL数
     params['max_dt'] = float(sc_conf.get('max_dt', 0.1)) # 最大时间步长
+    # --- 新增：读取CPU并行配置 ---
+    cpu_conf = sc_conf.get('cpu_parallelism', {})
+    params['cpu_parallel_enable'] = bool(cpu_conf.get('enable', True))  # 默认开启
+    params['cpu_num_threads'] = int(cpu_conf.get('num_threads', 0))  # 0 表示默认
+    # --- 读取CPU并行配置（暂时不可用） ---
     params['use_gpu'] = bool(sc_conf.get('use_gpu', False)) # 是否使用GPU
     params['gpu_modules_to_enable'] = sc_conf.get('gpu_modules', []) # GPU启用的模块
     if not isinstance(params['gpu_modules_to_enable'], list): # 确保是列表
@@ -766,6 +771,20 @@ if __name__ == "__main__":  # 主程序入口
 
     model_core = hydro_model_cpp.HydroModelCore_cpp()  # 创建C++模型对象
     print("Python: C++ HydroModelCore_cpp object created.")  # 打印创建信息
+
+    # --- 修改：总是调用 set_num_threads ---
+    if params['cpu_parallel_enable']:
+        num_threads_to_set = params['cpu_num_threads']
+        if num_threads_to_set > 0:
+            print(f"Python: Requesting C++ core to use {num_threads_to_set} threads.")
+        else:
+            print("Python: Requesting C++ core to use the default number of threads (all available).")
+        # 总是调用，让 C++ 端处理 num_threads <= 0 的情况
+        model_core.set_num_threads(num_threads_to_set)
+    else:
+        print("Python: CPU parallelism is disabled in config. Forcing 1 thread.")
+        model_core.set_num_threads(1)
+
 
     num_cells_for_manning = 0  # 初始化单元数
     try:  # 尝试

@@ -19,9 +19,13 @@ simulation_control:
   output_dt: 3600.0  # 输出频率
   cfl_number: 0.8
   max_dt: 1800.0      # 最大时间步长
-  use_gpu: false  # 总开关：true 或 false
-  gpu_modules:
-      - "friction"
+  cpu_parallelism:
+    enable: true
+    num_threads: 0  # 0 或不设置表示使用所有核心，4 表示使用4个核心
+  # GPU加速暂时不可用
+#  use_gpu: false  # 总开关：true 或 false
+#  gpu_modules:
+#      - "friction"
 
 physical_parameters:
   gravity: 9.81

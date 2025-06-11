@@ -9,6 +9,7 @@
 #include <algorithm>     // 用于 std::sort, std::find_if 等
 #include <map>           // 用于 setup_half_edge_structure_optimized_cpp
 #include <stdexcept>     // 用于运行时错误
+#include <omp.h>
 
 #ifdef _WIN32 // 仅在Windows平台下引入以下头文件和函数
 #define WIN32_LEAN_AND_MEAN // 排除不常用的Windows头文件

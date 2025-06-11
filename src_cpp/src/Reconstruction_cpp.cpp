@@ -3,6 +3,7 @@
 #include "Profiler.h"
 #include <stdexcept> // 包含标准异常
 #include <iostream> // 包含输入输出流 (用于调试)
+#include <omp.h>
 
 namespace HydroCore { // 定义HydroCore命名空间
 
@@ -26,204 +27,199 @@ PrimitiveVars_cpp Reconstruction_cpp::conserved_to_primitive(const std::array<do
     double h_for_division = std::max(h, epsilon); // 用于除法的安全水深
     return {h, U_cell[1] / h_for_division, U_cell[2] / h_for_division}; // 返回原始变量
 } // 结束方法
-const std::array<std::array<double, 2>, 3>& Reconstruction_cpp::get_gradient_for_cell(int cell_id) const { // 获取指定单元的梯度实现
-    if (gradients_primitive.empty()) { // 如果梯度为空 (例如一阶或未调用prepare_for_step)
-        // 返回一个静态的零梯度或者抛出异常
-        static const std::array<std::array<double, 2>, 3> zero_gradient = {{{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}}}; // 静态零梯度
-        // 或者更严格：
-        // throw std::runtime_error("Gradients are not available or not prepared.");
-        // std::cerr << "Warning: Accessing gradients when they are not available or not prepared for cell " << cell_id << std::endl; // 打印警告
-        return zero_gradient; // 返回零梯度
+const std::array<std::array<double, 2>, 3>& Reconstruction_cpp::get_gradient_for_cell(int cell_id) const {
+    if (gradients_primitive.empty()) {
+        static const std::array<std::array<double, 2>, 3> zero_gradient = { {{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}} };
+        return zero_gradient;
     }
-    if (cell_id < 0 || static_cast<size_t>(cell_id) >= gradients_primitive.size()) { // 检查cell_id是否越界
-        throw std::out_of_range("Cell ID is out of bounds for accessing gradients."); // 抛出越界异常
+    if (cell_id < 0 || static_cast<size_t>(cell_id) >= gradients_primitive.size()) {
+        throw std::out_of_range("Cell ID is out of bounds for accessing gradients.");
     }
-    return gradients_primitive[cell_id]; // 返回对应单元的梯度
+    return gradients_primitive[cell_id];
 }
-std::vector<PrimitiveVars_cpp> Reconstruction_cpp::get_all_primitive_states( // 获取所有原始状态实现
+std::vector<PrimitiveVars_cpp> Reconstruction_cpp::get_all_primitive_states(
     const std::vector<std::array<double, 3>>& U_state_all) const {
-    PROFILE_FUNCTION(); // <--- 添加此行
-    std::vector<PrimitiveVars_cpp> W_state_all(U_state_all.size()); // 初始化原始状态数组
-    for (size_t i = 0; i < U_state_all.size(); ++i) { // 遍历所有单元
-        W_state_all[i] = conserved_to_primitive(U_state_all[i]); // 转换并存储
-    }
-    return W_state_all; // 返回所有原始状态
-} // 结束方法
-
-void Reconstruction_cpp::prepare_for_step(const std::vector<std::array<double, 3>>& U_state_all) { // 准备步骤实现
     PROFILE_FUNCTION();
-    if (scheme_internal == ReconstructionScheme_cpp::FIRST_ORDER) { // 如果是一阶方案
-        gradients_primitive.clear(); // 清空梯度 (或设为全零，如果后续逻辑依赖其大小)
-        return; // 直接返回
+    std::vector<PrimitiveVars_cpp> W_state_all(U_state_all.size());
+    // --- 新增：并行化这个转换循环 ---
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < U_state_all.size(); ++i) {
+        W_state_all[i] = conserved_to_primitive(U_state_all[i]);
     }
-    if (mesh->cells.empty()) return; // 如果没有单元则返回
+    return W_state_all;
+}
 
-    // std::cout << "  C++ Reconstruction: Preparing for step (gradients & limiters)..." << std::endl; // 打印准备信息
+void Reconstruction_cpp::prepare_for_step(const std::vector<std::array<double, 3>>& U_state_all) {
+    PROFILE_FUNCTION();
+    if (scheme_internal == ReconstructionScheme_cpp::FIRST_ORDER) {
+        gradients_primitive.clear();
+        return;
+    }
+    if (mesh->cells.empty()) return;
 
-    size_t num_cells = mesh->cells.size(); // 获取单元数量
-    if (U_state_all.size() != num_cells) { // 检查状态数组大小是否与单元数量一致
-         throw std::runtime_error("U_state_all size does not match number of cells in mesh."); // 抛出运行时错误
+    size_t num_cells = mesh->cells.size();
+    if (U_state_all.size() != num_cells) {
+        throw std::runtime_error("U_state_all size does not match number of cells in mesh.");
     }
 
-    // 1. 计算所有单元的原始变量状态
-    std::vector<PrimitiveVars_cpp> W_state_all = get_all_primitive_states(U_state_all); // 获取所有原始状态
+    std::vector<PrimitiveVars_cpp> W_state_all = get_all_primitive_states(U_state_all);
 
-    // 2. 计算无限制的梯度 (Green-Gauss)
     std::vector<std::array<std::array<double, 2>, 3>> unlimited_gradients =
-        calculate_gradients_green_gauss(W_state_all); // 计算无限制梯度
+        calculate_gradients_green_gauss(W_state_all);
 
-    // 3. 计算限制器 phi
     std::vector<std::array<double, 3>> limiters_phi =
-        calculate_barth_jespersen_limiters(W_state_all, unlimited_gradients); // 计算限制器
+        calculate_barth_jespersen_limiters(W_state_all, unlimited_gradients);
 
-    // 4. 应用限制器得到最终梯度
-    gradients_primitive.resize(num_cells); // 调整梯度数组大小并初始化
-    for (size_t i = 0; i < num_cells; ++i) { // 遍历所有单元
-        for (int var = 0; var < 3; ++var) { // 遍历h, u, v
-            gradients_primitive[i][var][0] = limiters_phi[i][var] * unlimited_gradients[i][var][0]; // 应用限制器到x梯度
-            gradients_primitive[i][var][1] = limiters_phi[i][var] * unlimited_gradients[i][var][1]; // 应用限制器到y梯度
+    gradients_primitive.resize(num_cells);
+
+    // --- 新增：并行化最终梯度计算的循环 ---
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < num_cells; ++i) {
+        for (int var = 0; var < 3; ++var) {
+            gradients_primitive[i][var][0] = limiters_phi[i][var] * unlimited_gradients[i][var][0];
+            gradients_primitive[i][var][1] = limiters_phi[i][var] * unlimited_gradients[i][var][1];
         }
     }
-    // std::cout << "  C++ Reconstruction: Gradients and limiters prepared." << std::endl; // 打印完成信息
-} // 结束方法
+}
 
-std::vector<std::array<std::array<double, 2>, 3>> Reconstruction_cpp::calculate_gradients_green_gauss( // Green-Gauss梯度计算实现
+std::vector<std::array<std::array<double, 2>, 3>> Reconstruction_cpp::calculate_gradients_green_gauss(
     const std::vector<PrimitiveVars_cpp>& W_state_all) const {
-    PROFILE_FUNCTION(); // <--- 添加此行
-    size_t num_cells = mesh->cells.size(); // 获取单元数量
-    // 定义一个默认初始化的 value_type (所有 double 成员将为 0.0)
-    std::array<std::array<double, 2>, 3> default_gradient_value = {}; // 这是一个 std::array<std::array<double,2>,3> 类型的对象，所有元素为0
-    std::vector<std::array<std::array<double, 2>, 3>> gradients_all(num_cells, default_gradient_value); // 用默认值初始化num_cells个元素
+    PROFILE_FUNCTION();
+    size_t num_cells = mesh->cells.size();
+    std::array<std::array<double, 2>, 3> default_gradient_value = {};
+    std::vector<std::array<std::array<double, 2>, 3>> gradients_all(num_cells, default_gradient_value);
 
-    for (size_t i = 0; i < num_cells; ++i) { // 遍历所有单元
-        const Cell_cpp& cell_i = mesh->cells[i]; // 获取当前单元
-        const PrimitiveVars_cpp& W_i = W_state_all[i]; // 当前单元原始变量
+    // --- 新增：并行化Green-Gauss主循环 ---
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < num_cells; ++i) {
+        const Cell_cpp& cell_i = mesh->cells[i];
+        const PrimitiveVars_cpp& W_i = W_state_all[i];
 
-        if (cell_i.area < epsilon) continue; // 跳过面积过小的单元
+        if (cell_i.area < epsilon) continue; // 在并行循环中使用 continue 是安全的
 
-        std::array<std::array<double, 2>, 3> grad_W_i_sum = {{{0,0},{0,0},{0,0}}}; // 初始化梯度和 (h,u,v 对 x,y)
+        std::array<std::array<double, 2>, 3> grad_W_i_sum = { {{0,0},{0,0},{0,0}} };
 
-        for (int he_id : cell_i.half_edge_ids_list) { // 遍历单元的半边ID
-            const HalfEdge_cpp* he = mesh->get_half_edge_by_id(he_id); // 获取半边对象
-            if (!he) continue; // 跳过无效半边
+        for (int he_id : cell_i.half_edge_ids_list) {
+            const HalfEdge_cpp* he = mesh->get_half_edge_by_id(he_id);
+            if (!he) continue;
 
-            PrimitiveVars_cpp W_neighbor = W_i; // 默认使用内部值 (用于边界)
-            if (he->twin_half_edge_id != -1) { // 如果是内部边
-                const HalfEdge_cpp* twin_he = mesh->get_half_edge_by_id(he->twin_half_edge_id); // 获取孪生半边
-                if (twin_he && twin_he->cell_id != -1) { // 如果孪生半边有效且属于某个单元
-                    W_neighbor = W_state_all[twin_he->cell_id]; // 获取邻居单元原始变量
+            PrimitiveVars_cpp W_neighbor = W_i;
+            if (he->twin_half_edge_id != -1) {
+                const HalfEdge_cpp* twin_he = mesh->get_half_edge_by_id(he->twin_half_edge_id);
+                if (twin_he && twin_he->cell_id != -1) {
+                    W_neighbor = W_state_all[twin_he->cell_id];
                 }
             }
-            // 界面值近似为两侧单元平均值
-            PrimitiveVars_cpp W_face = { // 计算界面值
-                0.5 * (W_i.h + W_neighbor.h), // 界面水深
-                0.5 * (W_i.u + W_neighbor.u), // 界面u速度
-                0.5 * (W_i.v + W_neighbor.v)  // 界面v速度
-            }; // 结束界面值计算
+            PrimitiveVars_cpp W_face = {
+                0.5 * (W_i.h + W_neighbor.h),
+                0.5 * (W_i.u + W_neighbor.u),
+                0.5 * (W_i.v + W_neighbor.v)
+            };
 
-            // 累加 Green-Gauss 贡献
-            grad_W_i_sum[0][0] += W_face.h * he->normal[0] * he->length; // d(h)/dx
-            grad_W_i_sum[0][1] += W_face.h * he->normal[1] * he->length; // d(h)/dy
-            grad_W_i_sum[1][0] += W_face.u * he->normal[0] * he->length; // d(u)/dx
-            grad_W_i_sum[1][1] += W_face.u * he->normal[1] * he->length; // d(u)/dy
-            grad_W_i_sum[2][0] += W_face.v * he->normal[0] * he->length; // d(v)/dx
-            grad_W_i_sum[2][1] += W_face.v * he->normal[1] * he->length; // d(v)/dy
+            grad_W_i_sum[0][0] += W_face.h * he->normal[0] * he->length;
+            grad_W_i_sum[0][1] += W_face.h * he->normal[1] * he->length;
+            grad_W_i_sum[1][0] += W_face.u * he->normal[0] * he->length;
+            grad_W_i_sum[1][1] += W_face.u * he->normal[1] * he->length;
+            grad_W_i_sum[2][0] += W_face.v * he->normal[0] * he->length;
+            grad_W_i_sum[2][1] += W_face.v * he->normal[1] * he->length;
         }
-        for (int var = 0; var < 3; ++var) { // 遍历h,u,v
-            gradients_all[i][var][0] = grad_W_i_sum[var][0] / cell_i.area; // 计算x梯度
-            gradients_all[i][var][1] = grad_W_i_sum[var][1] / cell_i.area; // 计算y梯度
+        for (int var = 0; var < 3; ++var) {
+            gradients_all[i][var][0] = grad_W_i_sum[var][0] / cell_i.area;
+            gradients_all[i][var][1] = grad_W_i_sum[var][1] / cell_i.area;
         }
     }
-    return gradients_all; // 返回所有梯度
-} // 结束方法
+    return gradients_all;
+}
 
-std::vector<std::array<double, 3>> Reconstruction_cpp::calculate_barth_jespersen_limiters( // Barth-Jespersen限制器计算实现
+std::vector<std::array<double, 3>> Reconstruction_cpp::calculate_barth_jespersen_limiters(
     const std::vector<PrimitiveVars_cpp>& W_state_all,
     const std::vector<std::array<std::array<double, 2>, 3>>& unlimited_gradients_all) const {
-    PROFILE_FUNCTION(); // <--- 添加此行
-    size_t num_cells = mesh->cells.size(); // 获取单元数量
-    std::vector<std::array<double, 3>> limiters_phi_all(num_cells, {1.0, 1.0, 1.0}); // 初始化限制器为1 (无限制)
+    PROFILE_FUNCTION();
+    size_t num_cells = mesh->cells.size();
+    std::vector<std::array<double, 3>> limiters_phi_all(num_cells, { 1.0, 1.0, 1.0 });
 
-    for (size_t i = 0; i < num_cells; ++i) { // 遍历所有单元
-        const Cell_cpp& cell_i = mesh->cells[i]; // 获取当前单元
-        const PrimitiveVars_cpp& W_i = W_state_all[i]; // 当前单元中心值
+    // --- 新增：并行化限制器计算主循环 ---
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < num_cells; ++i) {
+        const Cell_cpp& cell_i = mesh->cells[i];
+        const PrimitiveVars_cpp& W_i = W_state_all[i];
 
-        // 初始化邻居单元中心值的最大最小值
-        PrimitiveVars_cpp W_max_neighbors = W_i; // 初始化为当前单元值
-        PrimitiveVars_cpp W_min_neighbors = W_i; // 初始化为当前单元值
-        bool has_valid_neighbors = false; // 标记是否有有效邻居
+        PrimitiveVars_cpp W_max_neighbors = W_i;
+        PrimitiveVars_cpp W_min_neighbors = W_i;
+        bool has_valid_neighbors = false;
 
-        for (int he_id : cell_i.half_edge_ids_list) { // 遍历半边
-            const HalfEdge_cpp* he = mesh->get_half_edge_by_id(he_id); // 获取半边对象
-            if (he && he->twin_half_edge_id != -1) { // 如果是内部边
-                const HalfEdge_cpp* twin_he = mesh->get_half_edge_by_id(he->twin_half_edge_id); // 获取孪生半边
-                if (twin_he && twin_he->cell_id != -1) { // 如果孪生半边有效且属于某个单元
-                    const PrimitiveVars_cpp& W_neighbor = W_state_all[twin_he->cell_id]; // 获取邻居值
-                    W_max_neighbors.h = std::max(W_max_neighbors.h, W_neighbor.h); // 更新h最大值
-                    W_min_neighbors.h = std::min(W_min_neighbors.h, W_neighbor.h); // 更新h最小值
-                    W_max_neighbors.u = std::max(W_max_neighbors.u, W_neighbor.u); // 更新u最大值
-                    W_min_neighbors.u = std::min(W_min_neighbors.u, W_neighbor.u); // 更新u最小值
-                    W_max_neighbors.v = std::max(W_max_neighbors.v, W_neighbor.v); // 更新v最大值
-                    W_min_neighbors.v = std::min(W_min_neighbors.v, W_neighbor.v); // 更新v最小值
-                    has_valid_neighbors = true; // 标记有有效邻居
+        for (int he_id : cell_i.half_edge_ids_list) {
+            const HalfEdge_cpp* he = mesh->get_half_edge_by_id(he_id);
+            if (he && he->twin_half_edge_id != -1) {
+                const HalfEdge_cpp* twin_he = mesh->get_half_edge_by_id(he->twin_half_edge_id);
+                if (twin_he && twin_he->cell_id != -1) {
+                    const PrimitiveVars_cpp& W_neighbor = W_state_all[twin_he->cell_id];
+                    W_max_neighbors.h = std::max(W_max_neighbors.h, W_neighbor.h);
+                    W_min_neighbors.h = std::min(W_min_neighbors.h, W_neighbor.h);
+                    W_max_neighbors.u = std::max(W_max_neighbors.u, W_neighbor.u);
+                    W_min_neighbors.u = std::min(W_min_neighbors.u, W_neighbor.u);
+                    W_max_neighbors.v = std::max(W_max_neighbors.v, W_neighbor.v);
+                    W_min_neighbors.v = std::min(W_min_neighbors.v, W_neighbor.v);
+                    has_valid_neighbors = true;
                 }
             }
         }
-        if (!has_valid_neighbors) continue; // 如果没有邻居，phi保持为1
+        if (!has_valid_neighbors) continue;
 
-        const std::array<std::array<double, 2>, 3>& grad_W_i = unlimited_gradients_all[i]; // 获取当前单元无限制梯度
-        std::array<double, 3> min_phi_for_cell_vars = {1.0, 1.0, 1.0}; // 当前单元各变量的最小phi
+        const std::array<std::array<double, 2>, 3>& grad_W_i = unlimited_gradients_all[i];
+        std::array<double, 3> min_phi_for_cell_vars = { 1.0, 1.0, 1.0 };
 
-        for (int node_id : cell_i.node_ids) { // 遍历单元的顶点ID
-            const Node_cpp* node = mesh->get_node_by_id(node_id); // 获取节点对象
-            if (!node) continue; // 跳过无效节点
+        for (int node_id : cell_i.node_ids) {
+            const Node_cpp* node = mesh->get_node_by_id(node_id);
+            if (!node) continue;
 
-            std::array<double, 2> vec_to_vertex = {node->x - cell_i.centroid[0], node->y - cell_i.centroid[1]}; // 形心到顶点向量
+            std::array<double, 2> vec_to_vertex = { node->x - cell_i.centroid[0], node->y - cell_i.centroid[1] };
 
-            // 计算顶点处的无限制重构值 W_vertex_unlimited = W_i + grad_W_i * vec_to_vertex
-            PrimitiveVars_cpp W_vertex_unlimited = { // 初始化顶点重构值
-                W_i.h + (grad_W_i[0][0] * vec_to_vertex[0] + grad_W_i[0][1] * vec_to_vertex[1]), // h
-                W_i.u + (grad_W_i[1][0] * vec_to_vertex[0] + grad_W_i[1][1] * vec_to_vertex[1]), // u
-                W_i.v + (grad_W_i[2][0] * vec_to_vertex[0] + grad_W_i[2][1] * vec_to_vertex[1])  // v
-            }; // 结束初始化
+            PrimitiveVars_cpp W_vertex_unlimited = {
+                W_i.h + (grad_W_i[0][0] * vec_to_vertex[0] + grad_W_i[0][1] * vec_to_vertex[1]),
+                W_i.u + (grad_W_i[1][0] * vec_to_vertex[0] + grad_W_i[1][1] * vec_to_vertex[1]),
+                W_i.v + (grad_W_i[2][0] * vec_to_vertex[0] + grad_W_i[2][1] * vec_to_vertex[1])
+            };
 
-            // 对每个变量 (h, u, v) 检查是否超限
-            const PrimitiveVars_cpp* W_ptr_vertex = &W_vertex_unlimited; // 指向顶点重构值
-            const PrimitiveVars_cpp* W_ptr_i = &W_i; // 指向单元中心值
-            const PrimitiveVars_cpp* W_ptr_max_n = &W_max_neighbors; // 指向邻居最大值
-            const PrimitiveVars_cpp* W_ptr_min_n = &W_min_neighbors; // 指向邻居最小值
+            const PrimitiveVars_cpp* W_ptr_vertex = &W_vertex_unlimited;
+            const PrimitiveVars_cpp* W_ptr_i = &W_i;
+            const PrimitiveVars_cpp* W_ptr_max_n = &W_max_neighbors;
+            const PrimitiveVars_cpp* W_ptr_min_n = &W_min_neighbors;
 
-            for (int var = 0; var < 3; ++var) { // 遍历h, u, v (用指针或switch简化访问)
-                double val_vertex = (var == 0) ? W_ptr_vertex->h : ((var == 1) ? W_ptr_vertex->u : W_ptr_vertex->v); // 获取顶点变量值
-                double val_i = (var == 0) ? W_ptr_i->h : ((var == 1) ? W_ptr_i->u : W_ptr_i->v); // 获取中心变量值
-                double val_max_n = (var == 0) ? W_ptr_max_n->h : ((var == 1) ? W_ptr_max_n->u : W_ptr_max_n->v); // 获取邻居最大值
-                double val_min_n = (var == 0) ? W_ptr_min_n->h : ((var == 1) ? W_ptr_min_n->u : W_ptr_min_n->v); // 获取邻居最小值
+            for (int var = 0; var < 3; ++var) {
+                double val_vertex = (var == 0) ? W_ptr_vertex->h : ((var == 1) ? W_ptr_vertex->u : W_ptr_vertex->v);
+                double val_i = (var == 0) ? W_ptr_i->h : ((var == 1) ? W_ptr_i->u : W_ptr_i->v);
+                double val_max_n = (var == 0) ? W_ptr_max_n->h : ((var == 1) ? W_ptr_max_n->u : W_ptr_max_n->v);
+                double val_min_n = (var == 0) ? W_ptr_min_n->h : ((var == 1) ? W_ptr_min_n->u : W_ptr_min_n->v);
 
-                double W_diff = val_vertex - val_i; // 计算重构值与中心值的差
-                double phi_k = 1.0; // 初始化phi_k
+                double W_diff = val_vertex - val_i;
+                double phi_k = 1.0;
 
-                if (W_diff > epsilon) { // 如果重构值大于中心值
-                    double max_allowed_diff = val_max_n - val_i; // 允许的最大差值
-                    if (std::abs(W_diff) > epsilon) { // 避免除零
-                        phi_k = std::max(0.0, max_allowed_diff / W_diff); // 计算限制因子
-                    } else { // W_diff 接近0
-                         phi_k = (max_allowed_diff >= -epsilon) ? 1.0 : 0.0; // 如果允许差值也接近0或正，则为1，否则为0
+                if (W_diff > epsilon) {
+                    double max_allowed_diff = val_max_n - val_i;
+                    if (std::abs(W_diff) > epsilon) {
+                        phi_k = std::max(0.0, max_allowed_diff / W_diff);
                     }
-                } else if (W_diff < -epsilon) { // 如果重构值小于中心值
-                    double min_allowed_diff = val_min_n - val_i; // 允许的最小差值 (负数)
-                    if (std::abs(W_diff) > epsilon) { // 避免除零
-                        phi_k = std::max(0.0, min_allowed_diff / W_diff); // 计算限制因子
-                    } else { // W_diff 接近0
-                        phi_k = (min_allowed_diff <= epsilon) ? 1.0 : 0.0; // 如果允许差值也接近0或负，则为1，否则为0
+                    else {
+                        phi_k = (max_allowed_diff >= -epsilon) ? 1.0 : 0.0;
                     }
                 }
-                min_phi_for_cell_vars[var] = std::min(min_phi_for_cell_vars[var], phi_k); // 更新该变量的最小phi
+                else if (W_diff < -epsilon) {
+                    double min_allowed_diff = val_min_n - val_i;
+                    if (std::abs(W_diff) > epsilon) {
+                        phi_k = std::max(0.0, min_allowed_diff / W_diff);
+                    }
+                    else {
+                        phi_k = (min_allowed_diff <= epsilon) ? 1.0 : 0.0;
+                    }
+                }
+                min_phi_for_cell_vars[var] = std::min(min_phi_for_cell_vars[var], phi_k);
             }
         }
-        limiters_phi_all[i] = min_phi_for_cell_vars; // 存储当前单元各变量的限制器
+        limiters_phi_all[i] = min_phi_for_cell_vars;
     }
-    return limiters_phi_all; // 返回所有限制器
-} // 结束方法
+    return limiters_phi_all;
+}
 
 std::pair<PrimitiveVars_cpp, PrimitiveVars_cpp> Reconstruction_cpp::get_reconstructed_interface_states(
     const std::vector<std::array<double, 3>>& U_state_all,

@@ -39,6 +39,9 @@ public: // 公有成员
     HydroModelCore_cpp(); // 修改后的构造函数 (不再接收Mesh_cpp*)
     ~HydroModelCore_cpp(); // 析构函数
 
+    // --- 新增：设置并行计算线程数的方法 ---
+    void set_num_threads(int num_threads);
+
     // 新的初始化方法，负责创建和加载网格，并初始化其他组件
     void initialize_model_from_files( // 从文件初始化模型
         const std::string& node_filepath, // 节点文件路径
